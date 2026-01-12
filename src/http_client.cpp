@@ -192,11 +192,15 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
         }
     }
     
-    std::ofstream file(output_path, std::ios::binary);
+    // Download to temporary file first
+    auto temp_path = output_path;
+    temp_path += ".incomplete";
+    
+    std::ofstream file(temp_path, std::ios::binary);
     if (!file) {
         return std::unexpected(HttpErrorInfo{
             HttpError::FileWriteError,
-            std::format("Failed to open file for writing: {}", output_path.string())
+            std::format("Failed to open file for writing: {}", temp_path.string())
         });
     }
     
@@ -227,7 +231,7 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
     file.close();
     
     if (res != CURLE_OK) {
-        std::filesystem::remove(output_path);
+        std::filesystem::remove(temp_path);
         return std::unexpected(HttpErrorInfo{
             HttpError::NetworkError,
             std::format("Download failed: {}", curl_easy_strerror(res))
@@ -238,11 +242,22 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
     curl_easy_getinfo(pImpl_->curl, CURLINFO_RESPONSE_CODE, &http_code);
     
     if (http_code >= 400) {
-        std::filesystem::remove(output_path);
+        std::filesystem::remove(temp_path);
         return std::unexpected(HttpErrorInfo{
             HttpError::HttpStatusError,
             std::format("HTTP error: {}", http_code),
             static_cast<int>(http_code)
+        });
+    }
+    
+    // Move temporary file to final location
+    std::error_code ec;
+    std::filesystem::rename(temp_path, output_path, ec);
+    if (ec) {
+        std::filesystem::remove(temp_path);
+        return std::unexpected(HttpErrorInfo{
+            HttpError::FileWriteError,
+            std::format("Failed to move file to final location: {}", ec.message())
         });
     }
     
