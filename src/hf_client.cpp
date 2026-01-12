@@ -159,11 +159,23 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
                 file_queue.pop();
             }
             
+            auto file_path = output_dir / file.filename;
+            
+            // Check if file already exists with correct size
+            if (std::filesystem::exists(file_path)) {
+                std::error_code ec;
+                auto existing_size = std::filesystem::file_size(file_path, ec);
+                if (!ec && file.size > 0 && existing_size == file.size) {
+                    size_t current = completed_files.fetch_add(1) + 1;
+                    std::cout << std::format("[{}/{}] Skipping {} (already exists)\n", 
+                                            current, total_files, file.filename);
+                    continue;
+                }
+            }
+            
             size_t current = completed_files.load() + 1;
             std::cout << std::format("[{}/{}] Downloading {}...\n", 
                                     current, total_files, file.filename);
-            
-            auto file_path = output_dir / file.filename;
             
             // Create subdirectories if needed
             if (file_path.has_parent_path()) {
