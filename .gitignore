@@ -1,0 +1,15 @@
+.DS_Store
+build/
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+hfdown
+*.user
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+cmake-build-*/
