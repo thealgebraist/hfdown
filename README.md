@@ -165,6 +165,10 @@ The downloader uses libcurl's efficient streaming capabilities and provides real
 - Downloaded/total size in MB
 - Current download speed in MB/s
 
+## Limitations
+
+**HuggingFace Cache Compatibility**: This tool downloads models to a simple directory structure. Files are NOT automatically compatible with the HuggingFace Hub cache format (`.cache/huggingface/hub/models--{org}--{model}/blobs/`). If you need cache compatibility with the official `huggingface_hub` library, use the official Python tools or manually copy files to the cache structure.
+
 ## Error Handling
 
 All operations use `std::expected` for clean error propagation. Errors include:
@@ -210,7 +214,8 @@ sudo dnf install libcurl-devel
 If you get "Model not found" errors, ensure:
 1. Model ID is correct (use the exact ID from huggingface.co)
 2. Model is public or you have provided a valid token
-3. You have internet connectivity
+3. YouHuggingFace cache format compatibility (`.cache/huggingface/hub` structure)
+- [ ]  have internet connectivity
 
 ## Future Enhancements
 
