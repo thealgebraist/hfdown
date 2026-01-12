@@ -52,7 +52,8 @@ public:
     std::expected<void, HFErrorInfo> download_model(
         const std::string& model_id,
         const std::filesystem::path& output_dir,
-        ProgressCallback progress_callback = nullptr
+        ProgressCallback progress_callback = nullptr,
+        size_t parallel_downloads = 4
     );
 
 private:

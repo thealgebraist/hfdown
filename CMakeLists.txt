@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find required packages
 find_package(CURL REQUIRED)
+find_package(Threads REQUIRED)
 
 # Main executable
 add_executable(hfdown
@@ -21,6 +22,7 @@ target_include_directories(hfdown PRIVATE
 )
 
 target_link_libraries(hfdown PRIVATE
+    Threads::Threads
     ${CURL_LIBRARIES}
 )
 

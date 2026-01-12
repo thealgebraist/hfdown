@@ -82,9 +82,10 @@ int cmd_download(const std::string& model_id, const std::string& output_dir,
                 const std::string& token) {
     HuggingFaceClient client(token);
     
-    std::cout << std::format("Downloading model: {} to {}\n", model_id, output_dir);
+    std::cout << std::format("Downloading model: {} to {} (4 parallel downloads)\n", 
+                            model_id, output_dir);
     
-    auto result = client.download_model(model_id, output_dir, print_progress_bar);
+    auto result = client.download_model(model_id, output_dir, print_progress_bar, 4);
     
     if (!result) {
         std::cerr << std::format("Error: {}\n", result.error().message);

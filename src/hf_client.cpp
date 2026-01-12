@@ -2,6 +2,11 @@
 #include "json.hpp"
 #include <format>
 #include <iostream>
+#include <thread>
+#include <mutex>
+#include <queue>
+#include <condition_variable>
+#include <atomic>
 
 namespace hfdown {
 
@@ -109,7 +114,8 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_file(
 std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
     const std::string& model_id,
     const std::filesystem::path& output_dir,
-    ProgressCallback progress_callback
+    ProgressCallback progress_callback,
+    size_t parallel_downloads
 ) {
     // First, get model info to know what files to download
     auto model_info = get_model_info(model_id);
@@ -127,27 +133,86 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
         });
     }
     
-    // Download each file
-    size_t total_files = model_info->files.size();
-    size_t current_file = 0;
+    const size_t total_files = model_info->files.size();
+    std::atomic<size_t> completed_files{0};
+    std::atomic<bool> has_error{false};
+    std::mutex error_mutex;
+    HFErrorInfo first_error{HFError::NetworkError, ""};
     
+    // Queue of files to download
+    std::queue<ModelFile> file_queue;
     for (const auto& file : model_info->files) {
-        ++current_file;
-        std::cout << std::format("[{}/{}] Downloading {}...\n", 
-                                current_file, total_files, file.filename);
-        
-        auto file_path = output_dir / file.filename;
-        
-        // Create subdirectories if needed
-        if (file_path.has_parent_path()) {
-            std::filesystem::create_directories(file_path.parent_path(), ec);
+        file_queue.push(file);
+    }
+    std::mutex queue_mutex;
+    
+    // Worker function
+    auto worker = [&]() {
+        while (true) {
+            ModelFile file;
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                if (file_queue.empty() || has_error.load()) {
+                    return;
+                }
+                file = file_queue.front();
+                file_queue.pop();
+            }
+            
+            size_t current = completed_files.load() + 1;
+            std::cout << std::format("[{}/{}] Downloading {}...\n", 
+                                    current, total_files, file.filename);
+            
+            auto file_path = output_dir / file.filename;
+            
+            // Create subdirectories if needed
+            if (file_path.has_parent_path()) {
+                std::error_code ec;
+                std::filesystem::create_directories(file_path.parent_path(), ec);
+            }
+            
+            // Create a new HTTP client for each thread
+            HttpClient thread_http_client;
+            if (!token_.empty()) {
+                thread_http_client.set_header("Authorization", 
+                    std::format("Bearer {}", token_));
+            }
+            
+            std::string url = get_file_url(model_id, file.filename);
+            auto result = thread_http_client.download_file(url, file_path, progress_callback);
+            
+            if (!result) {
+                bool expected = false;
+                if (has_error.compare_exchange_strong(expected, true)) {
+                    std::lock_guard<std::mutex> lock(error_mutex);
+                    first_error = HFErrorInfo{
+                        HFError::NetworkError,
+                        std::format("Failed to download {}: {}", 
+                                  file.filename, result.error().message)
+                    };
+                }
+                return;
+            }
+            
+            completed_files.fetch_add(1);
         }
-        
-        auto result = download_file(model_id, file.filename, file_path, progress_callback);
-        
-        if (!result) {
-            return std::unexpected(result.error());
-        }
+    };
+    
+    // Launch worker threads
+    std::vector<std::jthread> workers;
+    size_t num_threads = std::min(parallel_downloads, total_files);
+    workers.reserve(num_threads);
+    
+    for (size_t i = 0; i < num_threads; ++i) {
+        workers.emplace_back(worker);
+    }
+    
+    // Wait for all threads to complete
+    workers.clear();
+    
+    if (has_error.load()) {
+        std::lock_guard<std::mutex> lock(error_mutex);
+        return std::unexpected(first_error);
     }
     
     std::cout << std::format("✓ Successfully downloaded {} files to {}\n", 
