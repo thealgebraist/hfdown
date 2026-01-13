@@ -15,9 +15,52 @@
 
 #ifdef USE_NGTCP2
 #include <ngtcp2/ngtcp2.h>
+#include <ngtcp2/ngtcp2_crypto.h>
+#include <ngtcp2/ngtcp2_crypto_ossl.h>
 #include <nghttp3/nghttp3.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 #include <openssl/rand.h>
 #include <sys/select.h>
+#endif
+
+#if defined(USE_NGTCP2)
+
+namespace hfdown {
+
+static uint64_t quic_now_ns() {
+    using namespace std::chrono;
+    return (uint64_t)duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+static ngtcp2_conn* get_ngtcp2_conn_from_ref(ngtcp2_crypto_conn_ref* conn_ref) {
+    return static_cast<QuicSocket*>(conn_ref->user_data)->ng_conn_;
+}
+
+static void rand_cb(uint8_t* dest, size_t destlen, const ngtcp2_rand_ctx*) {
+    (void)RAND_bytes(dest, (int)destlen);
+}
+
+static int get_new_connection_id_cb(ngtcp2_conn*, ngtcp2_cid* cid, uint8_t* token, size_t cidlen, void*) {
+    std::vector<uint8_t> data(cidlen);
+    if (RAND_bytes(data.data(), (int)data.size()) != 1) return NGTCP2_ERR_CALLBACK_FAILURE;
+    ngtcp2_cid_init(cid, data.data(), data.size());
+    if (RAND_bytes(token, (int)NGTCP2_STATELESS_RESET_TOKENLEN) != 1) return NGTCP2_ERR_CALLBACK_FAILURE;
+    return 0;
+}
+
+static int recv_stream_data_cb(ngtcp2_conn*, uint32_t flags, int64_t stream_id, uint64_t,
+                               const uint8_t* data, size_t datalen, void* user_data, void*) {
+    auto* s = static_cast<QuicSocket*>(user_data);
+    if (!s->ng_h3conn_) return 0;
+    int fin = (flags & NGTCP2_STREAM_DATA_FLAG_FIN) != 0;
+    nghttp3_tstamp ts = (nghttp3_tstamp)quic_now_ns();
+    int rv = nghttp3_conn_read_stream2(s->ng_h3conn_, stream_id, data, datalen, fin, ts);
+    if (rv != 0) return NGTCP2_ERR_CALLBACK_FAILURE;
+    return 0;
+}
+
+}
 #endif
 
 
@@ -38,10 +81,34 @@ void QuicSocket::close() {
         udp_fd_ = -1;
     }
     connected_ = false;
+#if defined(USE_NGTCP2)
+    if (ng_h3conn_) {
+        nghttp3_conn_del(ng_h3conn_);
+        ng_h3conn_ = nullptr;
+    }
+    if (ng_conn_) {
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+    }
+    if (ng_crypto_ctx_) {
+        ngtcp2_crypto_ossl_ctx_del(reinterpret_cast<ngtcp2_crypto_ossl_ctx*>(ng_crypto_ctx_));
+        ng_crypto_ctx_ = nullptr;
+    }
+    if (ng_ssl_) {
+        SSL_set_app_data(ng_ssl_, nullptr);
+        SSL_free(ng_ssl_);
+        ng_ssl_ = nullptr;
+    }
+    if (ng_ssl_ctx_) {
+        SSL_CTX_free(ng_ssl_ctx_);
+        ng_ssl_ctx_ = nullptr;
+    }
+#endif
 }
 
 std::expected<void, QuicError> QuicSocket::connect(const std::string& host, uint16_t port) {
     std::cout << "[DEBUG] QuicSocket::connect host='" << host << "' port=" << port << "\n";
+    peer_host_ = host;
     udp_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fd_ < 0) {
         return std::unexpected(QuicError{"Failed to create UDP socket", errno});
@@ -83,10 +150,40 @@ std::expected<void, QuicError> QuicSocket::connect(const std::string& host, uint
 std::expected<void, QuicError> QuicSocket::init_quic() {
     // Initialize QUIC backend: prefer ngtcp2 -> quiche -> fallback
 #if defined(USE_NGTCP2)
-    std::cout << "[DEBUG] init_quic: ngtcp2 enabled (skeleton init)\n";
-    // Minimal skeleton: real ngtcp2 integration is complex; mark as configured
-    ngtcp2_session_ = reinterpret_cast<void*>(0x1);
-    std::cout << "[DEBUG] ngtcp2_session_ -> " << ngtcp2_session_ << "\n";
+    std::cout << "[DEBUG] init_quic: ngtcp2 enabled - initializing TLS helper\n";
+    if (ngtcp2_crypto_ossl_init() != 0) {
+        std::cerr << "[DEBUG] ngtcp2_crypto_ossl_init failed\n";
+        return std::unexpected(QuicError{"ngtcp2_crypto_ossl_init failed", 0});
+    }
+
+    ng_ssl_ctx_ = SSL_CTX_new(TLS_client_method());
+    if (!ng_ssl_ctx_) {
+        unsigned long e = ERR_get_error();
+        return std::unexpected(QuicError{std::format("SSL_CTX_new failed: {}", e), (int)e});
+    }
+    SSL_CTX_set_min_proto_version(ng_ssl_ctx_, TLS1_3_VERSION);
+
+    ng_ssl_ = SSL_new(ng_ssl_ctx_);
+    if (!ng_ssl_) {
+        SSL_CTX_free(ng_ssl_ctx_);
+        ng_ssl_ctx_ = nullptr;
+        unsigned long e = ERR_get_error();
+        return std::unexpected(QuicError{std::format("SSL_new failed: {}", e), (int)e});
+    }
+
+    if (ngtcp2_crypto_ossl_ctx_new(reinterpret_cast<ngtcp2_crypto_ossl_ctx**>(&ng_crypto_ctx_), ng_ssl_) != 0) {
+        SSL_free(ng_ssl_);
+        ng_ssl_ = nullptr;
+        SSL_CTX_free(ng_ssl_ctx_);
+        ng_ssl_ctx_ = nullptr;
+        return std::unexpected(QuicError{"ngtcp2_crypto_ossl_ctx_new failed", 0});
+    }
+
+    std::cout << "[DEBUG] ngtcp2 TLS helper initialized\n";
+    // ngtcp2_conn and nghttp3_conn will be created in handshake
+    ng_conn_ = nullptr;
+    ng_h3conn_ = nullptr;
+    ng_stream_id_ = 0;
     return {};
 #elif defined(USE_QUIC)
     std::cout << "[DEBUG] init_quic: quiche available - creating config\n";
@@ -118,9 +215,102 @@ std::expected<void, QuicError> QuicSocket::init_quic() {
 std::expected<void, QuicError> QuicSocket::handshake() {
     // Handshake depending on chosen backend
 #if defined(USE_NGTCP2)
-    std::cout << "[DEBUG] handshake: ngtcp2 skeleton - marking connected\n";
-    if (!ngtcp2_session_) return std::unexpected(QuicError{"ngtcp2 not initialized", 0});
+    std::cout << "[DEBUG] handshake: ngtcp2/nghttp3 session creation\n";
+    if (!ng_crypto_ctx_ || !ng_ssl_ || !ng_ssl_ctx_) {
+        return std::unexpected(QuicError{"ngtcp2 TLS not initialized", 0});
+    }
+
+    // Configure TLS for QUIC (ALPN + SNI + glue)
+    (void)SSL_set_tlsext_host_name(ng_ssl_, peer_host_.c_str());
+    // ALPN wire format: list of (len, bytes)
+    static const uint8_t alpn[] = {0x02, 'h', '3'};
+    (void)SSL_set_alpn_protos(ng_ssl_, alpn, (unsigned)sizeof(alpn));
+    SSL_set_connect_state(ng_ssl_);
+
+    ng_conn_ref_.get_conn = get_ngtcp2_conn_from_ref;
+    ng_conn_ref_.user_data = this;
+    SSL_set_app_data(ng_ssl_, &ng_conn_ref_);
+
+    if (ngtcp2_crypto_ossl_configure_client_session(ng_ssl_) != 0) {
+        return std::unexpected(QuicError{"ngtcp2_crypto_ossl_configure_client_session failed", 0});
+    }
+
+    // Generate random DCID/SCID
+    uint8_t dcidbuf[16];
+    uint8_t scidbuf[16];
+    if (RAND_bytes(dcidbuf, sizeof(dcidbuf)) != 1 || RAND_bytes(scidbuf, sizeof(scidbuf)) != 1) {
+        return std::unexpected(QuicError{"RAND_bytes failed", 0});
+    }
+    ngtcp2_cid dcid;
+    ngtcp2_cid scid;
+    ngtcp2_cid_init(&dcid, dcidbuf, sizeof(dcidbuf));
+    ngtcp2_cid_init(&scid, scidbuf, sizeof(scidbuf));
+
+    // Path (local/remote)
+    sockaddr_storage local_addr{};
+    socklen_t local_addr_len = sizeof(local_addr);
+    if (getsockname(udp_fd_, reinterpret_cast<sockaddr*>(&local_addr), &local_addr_len) != 0) {
+        return std::unexpected(QuicError{"getsockname failed", errno});
+    }
+    ngtcp2_path path;
+    memset(&path, 0, sizeof(path));
+    ngtcp2_addr_init(&path.local, reinterpret_cast<const ngtcp2_sockaddr*>(&local_addr), (ngtcp2_socklen)local_addr_len);
+    ngtcp2_addr_init(&path.remote, reinterpret_cast<const ngtcp2_sockaddr*>(&peer_addr_), (ngtcp2_socklen)peer_addr_len_);
+
+    // ngtcp2 callbacks
+    ngtcp2_callbacks callbacks;
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.client_initial = ngtcp2_crypto_client_initial_cb;
+    callbacks.recv_crypto_data = ngtcp2_crypto_recv_crypto_data_cb;
+    callbacks.encrypt = ngtcp2_crypto_encrypt_cb;
+    callbacks.decrypt = ngtcp2_crypto_decrypt_cb;
+    callbacks.hp_mask = ngtcp2_crypto_hp_mask_cb;
+    callbacks.recv_stream_data = recv_stream_data_cb;
+    callbacks.recv_retry = ngtcp2_crypto_recv_retry_cb;
+    callbacks.rand = rand_cb;
+    callbacks.get_new_connection_id = get_new_connection_id_cb;
+    callbacks.update_key = ngtcp2_crypto_update_key_cb;
+    callbacks.delete_crypto_aead_ctx = ngtcp2_crypto_delete_crypto_aead_ctx_cb;
+    callbacks.delete_crypto_cipher_ctx = ngtcp2_crypto_delete_crypto_cipher_ctx_cb;
+    callbacks.get_path_challenge_data = ngtcp2_crypto_get_path_challenge_data_cb;
+    callbacks.version_negotiation = ngtcp2_crypto_version_negotiation_cb;
+
+    // ngtcp2 settings / transport params
+    ngtcp2_settings settings;
+    ngtcp2_settings_default(&settings);
+    settings.initial_ts = (ngtcp2_tstamp)quic_now_ns();
+
+    ngtcp2_transport_params params;
+    ngtcp2_transport_params_default(&params);
+    params.initial_max_stream_data_bidi_local = 1 << 20;
+    params.initial_max_stream_data_bidi_remote = 1 << 20;
+    params.initial_max_data = 1 << 20;
+    params.initial_max_streams_bidi = 16;
+    params.initial_max_streams_uni = 16;
+
+    int rv = ngtcp2_conn_client_new(&ng_conn_, &dcid, &scid, &path, NGTCP2_PROTO_VER_V1,
+                                    &callbacks, &settings, &params, nullptr, this);
+    if (rv != 0 || !ng_conn_) {
+        return std::unexpected(QuicError{"ngtcp2_conn_client_new failed", rv});
+    }
+
+    ngtcp2_conn_set_tls_native_handle(ng_conn_, ng_crypto_ctx_);
+
+    // nghttp3 callbacks/settings
+    nghttp3_callbacks h3_callbacks;
+    memset(&h3_callbacks, 0, sizeof(h3_callbacks));
+    nghttp3_settings h3_settings;
+    nghttp3_settings_default(&h3_settings);
+
+    rv = nghttp3_conn_client_new(&ng_h3conn_, &h3_callbacks, &h3_settings, nullptr, this);
+    if (rv != 0 || !ng_h3conn_) {
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+        return std::unexpected(QuicError{"nghttp3_conn_client_new failed", rv});
+    }
+
     connected_ = true;
+    std::cout << "[DEBUG] ngtcp2/nghttp3 session created\n";
     return {};
 #elif defined(USE_QUIC)
     if (!config_ || !h3_config_) return std::unexpected(QuicError{"quiche not initialized", 0});
@@ -294,14 +484,40 @@ std::expected<void, QuicError> QuicSocket::send_headers(
 ) {
     // Use quiche H3 API when available
 #if defined(USE_NGTCP2)
-    // ngtcp2 skeleton: fallback to sending headers as plain text over UDP
-    std::string encoded_headers;
-    for (const auto& [key, value] : headers) {
-        encoded_headers += std::format("{}: {}\r\n", key, value);
+    // Minimal nghttp3: send a GET request
+    if (!ng_h3conn_ || !ng_conn_) return std::unexpected(QuicError{"nghttp3/ngtcp2 not initialized", 0});
+
+    // Prepare pseudo-headers for GET request
+    std::vector<nghttp3_nv> nva;
+    std::vector<std::string> names, values;
+    for (const auto& [k, v] : headers) {
+        names.push_back(k);
+        values.push_back(v);
     }
-    encoded_headers += "\r\n";
-    auto result = send(std::span{encoded_headers.data(), encoded_headers.size()});
-    if (!result) return std::unexpected(result.error());
+    for (size_t i = 0; i < names.size(); ++i) {
+        nghttp3_nv nv;
+        nv.name = reinterpret_cast<const uint8_t*>(names[i].data());
+        nv.namelen = names[i].size();
+        nv.value = reinterpret_cast<const uint8_t*>(values[i].data());
+        nv.valuelen = values[i].size();
+        nv.flags = NGHTTP3_NV_FLAG_NONE;
+        nva.push_back(nv);
+    }
+
+    // Open a new stream (stream_id = 0 for first request)
+    ng_stream_id_ = 0;
+    int rv = nghttp3_conn_submit_request(
+        ng_h3conn_,
+        ng_stream_id_,
+        nva.data(),
+        nva.size(),
+        nullptr, // no data reader for GET
+        nullptr  // stream user data
+    );
+    if (rv != 0) return std::unexpected(QuicError{"nghttp3_conn_submit_request failed", rv});
+
+    // TODO: Drive ngtcp2/nghttp3 event loop to flush packets
+    // For now, just return success
     return {};
 #elif defined(USE_QUIC)
     if (!h3_conn_) return std::unexpected(QuicError{"H3 not initialized", 0});
@@ -348,10 +564,12 @@ std::expected<void, QuicError> QuicSocket::send_headers(
 std::expected<std::string, QuicError> QuicSocket::recv_headers() {
     // Use quiche H3 API when available
 #if defined(USE_NGTCP2)
-    recv_buffer_.resize(65536);
-    auto res = recv(std::span{recv_buffer_.data(), recv_buffer_.size()});
-    if (!res) return std::unexpected(res.error());
-    return std::string(recv_buffer_.data(), *res);
+    // Minimal nghttp3: poll for response headers
+    if (!ng_h3conn_ || !ng_conn_) return std::unexpected(QuicError{"nghttp3/ngtcp2 not initialized", 0});
+
+    // TODO: Drive ngtcp2/nghttp3 event loop to receive packets and poll for headers
+    // For now, just return a placeholder
+    return std::string("[nghttp3] Response headers not yet implemented\n");
 #elif defined(USE_QUIC)
     recv_buffer_.resize(65536);
     auto res = recv(std::span{recv_buffer_.data(), recv_buffer_.size()});
