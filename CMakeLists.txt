@@ -20,14 +20,14 @@ add_executable(hfdown
 )
 
 target_include_directories(hfdown PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${OPENSSL_INCLUDE_DIR}
 )
 
 target_link_libraries(hfdown PRIVATE
     Threads::Threads
     OpenSSL::SSL
-    OpenSSL::Cryptos(hfdown PRIVATE
-    Threads::Threads
+    OpenSSL::Crypto
 )
 
 # Compiler warnings
@@ -36,6 +36,3 @@ if(MSVC)
 else()
     target_compile_options(hfdown PRIVATE -Wall -Wextra -Wpedantic)
 endif()
-
-# Installation
-install(TARGETS hfdown DESTINATION bin)

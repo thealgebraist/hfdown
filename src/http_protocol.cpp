@@ -1,4 +1,5 @@
 #include "http_protocol.hpp"
+#include "tls_socket.hpp"
 #include <sstream>
 #include <algorithm>
 #include <format>
@@ -41,7 +42,8 @@ bool HttpProtocol::header_equals(const std::string& value, const std::string& ex
     return lower_value == expected;
 }
 
-std::expected<HttpResponse, HttpErrorInfo> HttpProtocol::parse_response(Socket& socket) {
+template<typename SocketType>
+std::expected<HttpResponse, HttpErrorInfo> HttpProtocol::parse_response(SocketType& socket) {
     auto status_line = socket.read_until("\r\n");
     if (!status_line) {
         return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to read status line"});
@@ -78,7 +80,8 @@ std::expected<HttpResponse, HttpErrorInfo> HttpProtocol::parse_response(Socket& 
     return response;
 }
 
-std::expected<size_t, HttpErrorInfo> HttpProtocol::read_chunk(Socket& socket, std::span<char> buffer) {
+template<typename SocketType>
+std::expected<size_t, HttpErrorInfo> HttpProtocol::read_chunk(SocketType& socket, std::span<char> buffer) {
     auto size_line = socket.read_until("\r\n");
     if (!size_line) {
         return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to read chunk size"});
@@ -104,7 +107,8 @@ std::expected<size_t, HttpErrorInfo> HttpProtocol::read_chunk(Socket& socket, st
     return total_read;
 }
 
-std::expected<void, HttpErrorInfo> HttpProtocol::skip_chunk_trailer(Socket& socket) {
+template<typename SocketType>
+std::expected<void, HttpErrorInfo> HttpProtocol::skip_chunk_trailer(SocketType& socket) {
     while (true) {
         auto line = socket.read_until("\r\n");
         if (!line) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to read trailer"});
@@ -112,5 +116,13 @@ std::expected<void, HttpErrorInfo> HttpProtocol::skip_chunk_trailer(Socket& sock
     }
     return {};
 }
+
+// Explicit template instantiations
+template std::expected<HttpResponse, HttpErrorInfo> HttpProtocol::parse_response(Socket&);
+template std::expected<HttpResponse, HttpErrorInfo> HttpProtocol::parse_response(TlsSocket&);
+template std::expected<size_t, HttpErrorInfo> HttpProtocol::read_chunk(Socket&, std::span<char>);
+template std::expected<size_t, HttpErrorInfo> HttpProtocol::read_chunk(TlsSocket&, std::span<char>);
+template std::expected<void, HttpErrorInfo> HttpProtocol::skip_chunk_trailer(Socket&);
+template std::expected<void, HttpErrorInfo> HttpProtocol::skip_chunk_trailer(TlsSocket&);
 
 } // namespace hfdown

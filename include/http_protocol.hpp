@@ -28,12 +28,19 @@ struct HttpResponse {
 class HttpProtocol {
 public:
     static std::string build_request(const HttpRequest& req);
-    static std::expected<HttpResponse, HttpErrorInfo> parse_response(Socket& socket);
-    static std::expected<size_t, HttpErrorInfo> read_chunk(Socket& socket, std::span<char> buffer);
-    static std::expected<void, HttpErrorInfo> skip_chunk_trailer(Socket& socket);
     
-private:
+    template<typename SocketType>
+    static std::expected<HttpResponse, HttpErrorInfo> parse_response(SocketType& socket);
+    
+    template<typename SocketType>
+    static std::expected<size_t, HttpErrorInfo> read_chunk(SocketType& socket, std::span<char> buffer);
+    
+    template<typename SocketType>
+    static std::expected<void, HttpErrorInfo> skip_chunk_trailer(SocketType& socket);
+    
     static std::optional<std::string> get_header(const HttpResponse& resp, const std::string& name);
+
+private:
     static bool header_equals(const std::string& value, const std::string& expected);
 };
 

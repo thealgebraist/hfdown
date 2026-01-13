@@ -50,7 +50,7 @@ std::expected<void, SocketErrorInfo> TlsSocket::connect(const std::string& host,
     if (!conn) return conn;
     
     pImpl_->ssl = SSL_new(pImpl_->ctx);
-    SSL_set_fd(pImpl_->ssl, *reinterpret_cast<int*>(&pImpl_->socket));
+    SSL_set_fd(pImpl_->ssl, pImpl_->socket.fd());
     SSL_set_tlsext_host_name(pImpl_->ssl, host.c_str());
     
     if (SSL_connect(pImpl_->ssl) <= 0) {
@@ -77,6 +77,13 @@ std::expected<size_t, SocketErrorInfo> TlsSocket::write(std::span<const char> da
 std::expected<size_t, SocketErrorInfo> TlsSocket::read(std::span<char> buffer) {
     if (!pImpl_->ssl) {
         return std::unexpected(SocketErrorInfo{SocketError::ReadError, "TLS not connected"});
+    }
+    
+    if (!pImpl_->read_buffer.empty()) {
+        size_t to_copy = std::min(buffer.size(), pImpl_->read_buffer.size());
+        std::copy_n(pImpl_->read_buffer.begin(), to_copy, buffer.data());
+        pImpl_->read_buffer.erase(0, to_copy);
+        return to_copy;
     }
     
     int received = SSL_read(pImpl_->ssl, buffer.data(), buffer.size());

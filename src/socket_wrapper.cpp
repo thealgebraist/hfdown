@@ -40,6 +40,10 @@ void Socket::close() {
     }
 }
 
+int Socket::fd() const {
+    return pImpl_->fd;
+}
+
 std::expected<void, SocketErrorInfo> Socket::connect(const std::string& host, uint16_t port) {
     addrinfo hints{}, *result = nullptr;
     hints.ai_family = AF_UNSPEC;
@@ -91,6 +95,13 @@ std::expected<size_t, SocketErrorInfo> Socket::write(std::span<const char> data)
 std::expected<size_t, SocketErrorInfo> Socket::read(std::span<char> buffer) {
     if (pImpl_->fd < 0) {
         return std::unexpected(SocketErrorInfo{SocketError::ReadError, "Socket not connected"});
+    }
+    
+    if (!pImpl_->read_buffer.empty()) {
+        size_t to_copy = std::min(buffer.size(), pImpl_->read_buffer.size());
+        std::copy_n(pImpl_->read_buffer.begin(), to_copy, buffer.data());
+        pImpl_->read_buffer.erase(0, to_copy);
+        return to_copy;
     }
     
     ssize_t received = ::recv(pImpl_->fd, buffer.data(), buffer.size(), 0);

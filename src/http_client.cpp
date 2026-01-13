@@ -77,6 +77,14 @@ std::expected<std::string, HttpErrorInfo> get_impl(SocketType& socket, const Url
     
     auto response = HttpProtocol::parse_response(socket);
     if (!response) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, response.error().message});
+    
+    if (response->status_code >= 300 && response->status_code < 400) {
+        return HttpProtocol::get_header(*response, "Location")
+            .transform([](const auto& loc) { return std::string(loc); })
+            .or_else([](){ return std::optional<std::string>("Redirect without Location"); })
+            .value();
+    }
+    
     if (response->status_code >= 400) {
         return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, 
             std::format("HTTP {}", response->status_code), response->status_code});
@@ -86,13 +94,15 @@ std::expected<std::string, HttpErrorInfo> get_impl(SocketType& socket, const Url
     std::array<char, 65536> buffer{};
     
     if (response->chunked) {
-        while (auto chunk = HttpProtocol::read_chunk(socket, std::span{buffer})) {
-            if (*chunk == 0) break;
+        while (true) {
+            auto chunk = HttpProtocol::read_chunk(socket, std::span{buffer});
+            if (!chunk || *chunk == 0) break;
             body.append(buffer.data(), *chunk);
         }
     } else {
-        while (auto bytes = socket.read(std::span{buffer})) {
-            if (*bytes == 0) break;
+        while (true) {
+            auto bytes = socket.read(std::span{buffer});
+            if (!bytes || *bytes == 0) break;
             body.append(buffer.data(), *bytes);
         }
     }
@@ -108,21 +118,31 @@ std::expected<std::string, HttpErrorInfo> HttpClient::get(const std::string& url
         if (auto conn = socket.connect(parts.host, parts.port); !conn) {
             return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
         }
-        return get_impl(socket, parts, pImpl_->headers);
+        auto result = get_impl(socket, parts, pImpl_->headers);
+        if (result && result->starts_with("http")) {
+            socket.close();
+            return get(*result);
+        }
+        return result;
     } else {
         Socket socket;
         socket.set_timeout(pImpl_->timeout);
         if (auto conn = socket.connect(parts.host, parts.port); !conn) {
             return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
         }
-        return get_impl(socket, parts, pImpl_->headers);
+        auto result = get_impl(socket, parts, pImpl_->headers);
+        if (result && result->starts_with("http")) {
+            socket.close();
+            return get(*result);
+        }
+        return result;
     }
 }
 
-template<typename SocketType>
+template<typename SocketType, typename RedirectHandler>
 std::expected<void, HttpErrorInfo> download_impl(SocketType& socket, const UrlParts& parts,
     const std::filesystem::path& output_path, const std::map<std::string, std::string>& headers,
-    ProgressCallback progress_callback, const HttpConfig& config) {
+    ProgressCallback progress_callback, const HttpConfig& config, RedirectHandler&& redirect) {
     auto temp_path = std::filesystem::path(output_path).concat(".incomplete");
     std::ofstream file(temp_path, std::ios::binary);
     std::vector<char> file_buffer(config.file_buffer_size);
@@ -136,6 +156,17 @@ std::expected<void, HttpErrorInfo> download_impl(SocketType& socket, const UrlPa
     
     auto response = HttpProtocol::parse_response(socket);
     if (!response) { std::filesystem::remove(temp_path); return std::unexpected(HttpErrorInfo{HttpError::NetworkError, response.error().message}); }
+    
+    if (response->status_code >= 300 && response->status_code < 400) {
+        if (auto loc = HttpProtocol::get_header(*response, "Location")) {
+            std::filesystem::remove(temp_path);
+            socket.close();
+            auto redirect_url = loc->starts_with("http") ? *loc 
+                : std::format("{}://{}{}", parts.protocol, parts.host, *loc);
+            return redirect(redirect_url);
+        }
+    }
+    
     if (response->status_code >= 400) { std::filesystem::remove(temp_path); return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", response->status_code), response->status_code}); }
     
     auto last_time = std::chrono::steady_clock::now();
@@ -155,20 +186,24 @@ std::expected<void, HttpErrorInfo> download_impl(SocketType& socket, const UrlPa
     };
     
     if (response->chunked) {
-        while (auto chunk = HttpProtocol::read_chunk(socket, std::span{buffer})) {
-            if (*chunk == 0) break;
+        while (true) {
+            auto chunk = HttpProtocol::read_chunk(socket, std::span{buffer});
+            if (!chunk || *chunk == 0) break;
             file.write(buffer.data(), *chunk);
             downloaded += *chunk;
             update_progress();
         }
     } else {
-        while (auto bytes = socket.read(std::span{buffer})) {
-            if (*bytes == 0) break;
+        while (true) {
+            auto bytes = socket.read(std::span{buffer});
+            if (!bytes || *bytes == 0) break;
             file.write(buffer.data(), *bytes);
             downloaded += *bytes;
             update_progress();
         }
     }
+    
+    file.close();
     
     file.close();
     std::error_code ec;
@@ -196,14 +231,20 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
         if (auto conn = socket.connect(parts.host, parts.port); !conn) {
             return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
         }
-        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config);
+        auto redirect = [this, &output_path, &progress_callback](const std::string& url) {
+            return this->download_file(url, output_path, progress_callback);
+        };
+        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config, redirect);
     } else {
         Socket socket;
         socket.set_timeout(pImpl_->timeout);
         if (auto conn = socket.connect(parts.host, parts.port); !conn) {
             return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
         }
-        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config);
+        auto redirect = [this, &output_path, &progress_callback](const std::string& url) {
+            return this->download_file(url, output_path, progress_callback);
+        };
+        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config, redirect);
     }
 }
 

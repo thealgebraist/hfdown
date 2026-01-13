@@ -34,6 +34,7 @@ public:
     void set_timeout(int seconds);
     void close();
     bool is_open() const;
+    int fd() const;
     
 private:
     class Impl;
