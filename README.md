@@ -294,9 +294,126 @@ Download models directly to your Vast.ai GPU instance:
 - `--no-checksum`: Skip checksum verification (faster but less safe, only compares sizes)
 - `--token <token>`: HuggingFace API token for private models
 
+## Vast.ai Resource Monitoring
+
+Monitor GPU and CPU resource usage on your Vast.ai GPU instances in real-time with graphical visualization!
+
+### Features
+
+- **Real-time Monitoring**: Track GPU/CPU metrics with configurable intervals
+- **Comprehensive Metrics**: 
+  - GPU: Utilization, memory usage, temperature, power consumption
+  - CPU: Utilization, memory usage, load averages
+- **Data Logging**: Save metrics to CSV for later analysis
+- **Graphical Visualization**: Generate beautiful graphs from collected data
+- **SSH Integration**: Works seamlessly with Vast.ai SSH connections
+
+### Usage
+
+#### Monitor Resources
+
+Monitor your Vast.ai instance and save metrics to a CSV file:
+
+```bash
+# Basic monitoring (5-second interval, 60 seconds total)
+./hfdown vast-monitor 'ssh -p 12345 root@1.2.3.4'
+
+# Custom interval and duration
+./hfdown vast-monitor 'ssh -p 12345 root@1.2.3.4' --interval 10 --duration 300
+
+# Custom output file
+./hfdown vast-monitor 'ssh -p 12345 root@1.2.3.4' --output my_metrics.csv
+
+# Continuous monitoring (duration=0 means infinite)
+./hfdown vast-monitor 'ssh -p 12345 root@1.2.3.4' --duration 0
+```
+
+#### Visualize Results
+
+After collecting data, generate graphs using the Python visualization script:
+
+```bash
+# Visualize the collected data
+python3 visualize_monitor.py vast_monitor.csv
+
+# This creates vast_monitor.png with 6 graphs showing:
+# - GPU Utilization over time
+# - GPU Memory Usage over time
+# - GPU Temperature over time
+# - GPU Power Consumption over time
+# - CPU Utilization over time
+# - System Memory Usage over time
+```
+
+### Options
+
+- `--interval <seconds>`: Sampling interval in seconds (default: 5)
+- `--duration <seconds>`: Total monitoring duration in seconds, 0 for infinite (default: 60)
+- `--output <file>`: Output CSV file path (default: vast_monitor.csv)
+
+### Example Workflow
+
+```bash
+# 1. Start monitoring your Vast.ai instance for 5 minutes
+./hfdown vast-monitor 'ssh -p 40123 root@123.45.67.89' --interval 5 --duration 300
+
+# 2. Visualize the results
+python3 visualize_monitor.py vast_monitor.csv
+
+# 3. View the generated graph
+# Opens vast_monitor.png with comprehensive resource usage charts
+```
+
+### Requirements
+
+For visualization, you need Python 3 with matplotlib:
+
+```bash
+pip install matplotlib
+```
+
+### Sample Output
+
+The monitoring tool provides:
+- **Real-time console output**: Live metrics displayed during monitoring
+- **CSV data file**: Time-series data for all metrics
+- **Summary statistics**: Average, max values for all metrics
+- **Visualization graphs**: Professional charts showing resource usage over time
+
+Example summary output:
+```
+======================================================================
+MONITORING SUMMARY
+======================================================================
+
+GPU Statistics:
+
+  GPU 0: NVIDIA RTX 4090
+    Avg Utilization:  67.5%
+    Max Utilization:  92.0%
+    Avg Memory:       72.5%
+    Avg Temperature:  70.1°C
+    Max Temperature:  78.0°C
+    Avg Power:        320.5W
+
+  CPU/System Statistics:
+    Avg CPU Usage:    55.0%
+    Max CPU Usage:    80.0%
+    Avg Memory:       36.7%
+    Avg Load (1min):  1.74
+
+  Monitoring Period:
+    Start:            2024-01-13 10:00:00
+    End:              2024-01-13 10:00:45
+    Duration:         45 seconds
+    Samples:          10
+======================================================================
+```
+
 ## Future Enhancements
 
 - [x] Rsync-like incremental downloads
+- [x] Vast.ai resource monitoring with visualization
 - [ ] Parallel file downloads
 - [ ] Custom branch/revision support
 - [ ] Cache management

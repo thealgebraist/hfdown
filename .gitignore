@@ -19,3 +19,9 @@ test_https
 .vscode/
 .idea/
 cmake-build-*/
+# Monitoring output files
+vast_monitor.csv
+test_monitor_data.csv
+test_monitor_data.png
+*.png
+
