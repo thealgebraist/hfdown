@@ -1,4 +1,5 @@
 #include "hf_client.hpp"
+#include "kaggle_client.hpp"
 #include <iostream>
 #include <format>
 #include <string>
@@ -9,20 +10,28 @@
 using namespace hfdown;
 
 void print_usage(const char* program_name) {
-    std::cout << "HuggingFace Model Downloader (C++23)\n\n";
+    std::cout << "HuggingFace & Kaggle Downloader (C++23)\n\n";
     std::cout << "Usage:\n";
     std::cout << std::format("  {} <command> [options]\n\n", program_name);
-    std::cout << "Commands:\n";
+    std::cout << "HuggingFace Commands:\n";
     std::cout << "  info <model-id>              Get information about a model\n";
     std::cout << "  download <model-id> [dir]    Download entire model to directory\n";
     std::cout << "  file <model-id> <filename>   Download a specific file from model\n\n";
+    std::cout << "Kaggle Commands:\n";
+    std::cout << "  kaggle-info <owner/dataset>  Get information about a dataset\n";
+    std::cout << "  kaggle-dl <owner/dataset> [dir]  Download entire dataset\n";
+    std::cout << "  kaggle-file <owner/dataset> <filename>  Download specific file\n\n";
     std::cout << "Options:\n";
     std::cout << "  --token <token>              HuggingFace API token (or set HF_TOKEN env var)\n";
+    std::cout << "  --kaggle-user <username>     Kaggle username (or set KAGGLE_USERNAME env var)\n";
+    std::cout << "  --kaggle-key <key>           Kaggle API key (or set KAGGLE_KEY env var)\n";
     std::cout << "  --help                       Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << std::format("  {} info microsoft/phi-2\n", program_name);
     std::cout << std::format("  {} download gpt2 ./models/gpt2\n", program_name);
     std::cout << std::format("  {} file gpt2 config.json\n", program_name);
+    std::cout << std::format("  {} kaggle-info pytorch/imagenet\n", program_name);
+    std::cout << std::format("  {} kaggle-dl pytorch/imagenet ./datasets/imagenet\n", program_name);
 }
 
 void print_progress_bar(const DownloadProgress& progress) {
@@ -112,6 +121,67 @@ int cmd_download_file(const std::string& model_id, const std::string& filename,
     return 0;
 }
 
+int cmd_kaggle_info(const std::string& dataset_id, const std::string& username, const std::string& key) {
+    KaggleClient client(username, key);
+    
+    std::cout << std::format("Fetching info for dataset: {}\n", dataset_id);
+    
+    auto result = client.get_dataset_info(dataset_id);
+    if (!result) {
+        std::cerr << std::format("Error: {}\n", result.error().message);
+        return 1;
+    }
+    
+    const auto& info = *result;
+    std::cout << std::format("\nDataset: {}/{}\n", info.owner, info.dataset);
+    std::cout << std::format("Files: {}\n\n", info.files.size());
+    
+    for (const auto& file : info.files) {
+        double mb = file.size / (1024.0 * 1024.0);
+        std::cout << std::format("  {:50s} {:>10.2f} MB\n", file.name, mb);
+    }
+    
+    double total_mb = info.total_size / (1024.0 * 1024.0);
+    double total_gb = total_mb / 1024.0;
+    std::cout << std::format("\nTotal size: {:.2f} GB ({:.2f} MB)\n", total_gb, total_mb);
+    
+    return 0;
+}
+
+int cmd_kaggle_download(const std::string& dataset_id, const std::string& output_dir,
+                       const std::string& username, const std::string& key) {
+    KaggleClient client(username, key);
+    
+    std::cout << std::format("Downloading dataset: {} to {} (4 parallel downloads)\n",
+                            dataset_id, output_dir);
+    
+    auto result = client.download_dataset(dataset_id, output_dir, print_progress_bar, 4);
+    
+    if (!result) {
+        std::cerr << std::format("Error: {}\n", result.error().message);
+        return 1;
+    }
+    
+    return 0;
+}
+
+int cmd_kaggle_file(const std::string& dataset_id, const std::string& filename,
+                   const std::string& username, const std::string& key) {
+    KaggleClient client(username, key);
+    
+    std::cout << std::format("Downloading {} from {}\n", filename, dataset_id);
+    
+    auto result = client.download_file(dataset_id, filename, filename, print_progress_bar);
+    
+    if (!result) {
+        std::cerr << std::format("Error: {}\n", result.error().message);
+        return 1;
+    }
+    
+    std::cout << std::format("✓ Downloaded to {}\n", filename);
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -131,12 +201,25 @@ int main(int argc, char* argv[]) {
         token = env_token;
     }
     
+    // Get Kaggle credentials
+    std::string kaggle_user, kaggle_key;
+    if (const char* env_user = std::getenv("KAGGLE_USERNAME")) {
+        kaggle_user = env_user;
+    }
+    if (const char* env_key = std::getenv("KAGGLE_KEY")) {
+        kaggle_key = env_key;
+    }
+    
     // Parse command line arguments
     std::vector<std::string> args;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--token" && i + 1 < argc) {
             token = argv[++i];
+        } else if (arg == "--kaggle-user" && i + 1 < argc) {
+            kaggle_user = argv[++i];
+        } else if (arg == "--kaggle-key" && i + 1 < argc) {
+            kaggle_key = argv[++i];
         } else {
             args.push_back(arg);
         }
@@ -167,6 +250,32 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         return cmd_download_file(args[0], args[1], token);
+    }
+    else if (command == "kaggle-info") {
+        if (args.empty()) {
+            std::cerr << "Error: dataset-id required (format: owner/dataset)\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_kaggle_info(args[0], kaggle_user, kaggle_key);
+    }
+    else if (command == "kaggle-dl") {
+        if (args.empty()) {
+            std::cerr << "Error: dataset-id required (format: owner/dataset)\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        std::string dataset_id = args[0];
+        std::string output_dir = args.size() > 1 ? args[1] : std::format("./{}", dataset_id);
+        return cmd_kaggle_download(dataset_id, output_dir, kaggle_user, kaggle_key);
+    }
+    else if (command == "kaggle-file") {
+        if (args.size() < 2) {
+            std::cerr << "Error: dataset-id and filename required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_kaggle_file(args[0], args[1], kaggle_user, kaggle_key);
     }
     else {
         std::cerr << std::format("Unknown command: {}\n", command);
