@@ -235,6 +235,7 @@ std::expected<std::string, RsyncErrorInfo> RsyncClient::ssh_execute(
     }
     
     ssh_cmd << "-p " << config.port << " ";
+    // username and host are already validated to contain only safe characters (no escaping needed)
     ssh_cmd << config.username << "@" << config.host << " ";
     ssh_cmd << escape_shell_arg(command);
     
@@ -284,6 +285,7 @@ std::expected<void, RsyncErrorInfo> RsyncClient::scp_transfer(
     
     scp_cmd << "-P " << config.port << " ";
     scp_cmd << escape_shell_arg(local_file.string()) << " ";
+    // username and host are already validated to contain only safe characters (no escaping needed)
     scp_cmd << config.username << "@" << config.host << ":" << escape_shell_arg(remote_path);
     
     int status = system(scp_cmd.str().c_str());
@@ -381,7 +383,7 @@ std::expected<SshConfig, RsyncErrorInfo> RsyncClient::parse_vast_ssh(
     // Parse Vast.ai style: "ssh -p PORT root@IP" or "ssh -p PORT -i KEY root@IP"
     // Support IPv4, IPv6, and hostnames
     // Note: hyphen at end of character class to avoid ambiguity
-    std::regex vast_regex(R"(ssh\s+-p\s+(\d+)(?:\s+-i\s+(\S+))?\s+([\w_-]+)@([\w\d\.:_-]+))");
+    std::regex vast_regex(R"(ssh\s+-p\s+(\d+)(?:\s+-i\s+(\S+))?\s+([\w_\-]+)@([\w\d\.:_\-]+))");
     std::smatch matches;
     
     if (!std::regex_search(connection_string, matches, vast_regex)) {

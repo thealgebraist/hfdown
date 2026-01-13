@@ -2,14 +2,12 @@
 #include <iostream>
 #include <cassert>
 
-using namespace hfdown;
-
 void test_vast_ssh_parsing() {
     std::cout << "Testing Vast.ai SSH command parsing...\n\n";
     
     // Test 1: Basic format with port
     {
-        auto result = RsyncClient::parse_vast_ssh(
+        auto result = hfdown::RsyncClient::parse_vast_ssh(
             "ssh -p 12345 root@1.2.3.4",
             "/workspace/models"
         );
@@ -24,7 +22,7 @@ void test_vast_ssh_parsing() {
     
     // Test 2: Format with SSH key
     {
-        auto result = RsyncClient::parse_vast_ssh(
+        auto result = hfdown::RsyncClient::parse_vast_ssh(
             "ssh -p 54321 -i ~/.ssh/vast_key root@192.168.1.100",
             "/models"
         );
@@ -39,7 +37,7 @@ void test_vast_ssh_parsing() {
     
     // Test 3: Different username
     {
-        auto result = RsyncClient::parse_vast_ssh(
+        auto result = hfdown::RsyncClient::parse_vast_ssh(
             "ssh -p 22 ubuntu@10.0.0.5",
             "/home/ubuntu/data"
         );
@@ -53,7 +51,7 @@ void test_vast_ssh_parsing() {
     
     // Test 4: Hostname instead of IP
     {
-        auto result = RsyncClient::parse_vast_ssh(
+        auto result = hfdown::RsyncClient::parse_vast_ssh(
             "ssh -p 2222 user@vast-server.example.com",
             "/workspace"
         );
@@ -67,7 +65,7 @@ void test_vast_ssh_parsing() {
     
     // Test 5: IPv6 address
     {
-        auto result = RsyncClient::parse_vast_ssh(
+        auto result = hfdown::RsyncClient::parse_vast_ssh(
             "ssh -p 22 root@2001:db8::1",
             "/data"
         );
@@ -80,7 +78,7 @@ void test_vast_ssh_parsing() {
     
     // Test 6: Invalid port range
     {
-        auto result = RsyncClient::parse_vast_ssh(
+        auto result = hfdown::RsyncClient::parse_vast_ssh(
             "ssh -p 99999 root@1.2.3.4",
             "/path"
         );
@@ -90,7 +88,7 @@ void test_vast_ssh_parsing() {
     
     // Test 7: Invalid format
     {
-        auto result = RsyncClient::parse_vast_ssh(
+        auto result = hfdown::RsyncClient::parse_vast_ssh(
             "invalid command",
             "/path"
         );
