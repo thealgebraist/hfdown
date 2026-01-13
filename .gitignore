@@ -6,6 +6,12 @@ build/
 *.dll
 *.exe
 hfdown
+test_rsync
+test_api
+test_direct
+test_http
+test_http3
+test_https
 *.user
 *.swp
 *.swo
