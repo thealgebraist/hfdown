@@ -164,6 +164,12 @@ std::expected<SyncStats, RsyncErrorInfo> RsyncClient::sync_to_local(
     return stats;
 }
 
+namespace {
+    // Allowed characters for SSH validation
+    constexpr std::string_view VALID_USERNAME_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+    constexpr std::string_view VALID_HOST_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:";
+}
+
 // Escape shell special characters
 std::string escape_shell_arg(const std::string& arg) {
     std::string escaped;
@@ -192,7 +198,7 @@ std::expected<void, RsyncErrorInfo> validate_ssh_config(const SshConfig& config)
     
     // Validate username contains only safe characters
     if (config.username.empty() || 
-        config.username.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos) {
+        config.username.find_first_not_of(VALID_USERNAME_CHARS) != std::string::npos) {
         return std::unexpected(RsyncErrorInfo{
             RsyncError::SshConnectionFailed,
             "Invalid username: must contain only alphanumeric characters, underscore, or hyphen"
@@ -201,7 +207,7 @@ std::expected<void, RsyncErrorInfo> validate_ssh_config(const SshConfig& config)
     
     // Validate host (basic check - alphanumeric, dots, hyphens, colons for IPv6)
     if (config.host.empty() || 
-        config.host.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:") != std::string::npos) {
+        config.host.find_first_not_of(VALID_HOST_CHARS) != std::string::npos) {
         return std::unexpected(RsyncErrorInfo{
             RsyncError::SshConnectionFailed,
             "Invalid host: must be a valid hostname or IP address"
@@ -374,7 +380,8 @@ std::expected<SshConfig, RsyncErrorInfo> RsyncClient::parse_vast_ssh(
 {
     // Parse Vast.ai style: "ssh -p PORT root@IP" or "ssh -p PORT -i KEY root@IP"
     // Support IPv4, IPv6, and hostnames
-    std::regex vast_regex(R"(ssh\s+-p\s+(\d+)(?:\s+-i\s+(\S+))?\s+([\w-]+)@([\w\d\.\-:]+))");
+    // Note: hyphen at end of character class to avoid ambiguity
+    std::regex vast_regex(R"(ssh\s+-p\s+(\d+)(?:\s+-i\s+(\S+))?\s+([\w_-]+)@([\w\d\.:_-]+))");
     std::smatch matches;
     
     if (!std::regex_search(connection_string, matches, vast_regex)) {
