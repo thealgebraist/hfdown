@@ -1,5 +1,6 @@
 #include "hf_client.hpp"
 #include "kaggle_client.hpp"
+#include "cache_manager.hpp"
 #include <iostream>
 #include <format>
 #include <string>
@@ -21,6 +22,9 @@ void print_usage(const char* program_name) {
     std::cout << "  kaggle-info <owner/dataset>  Get information about a dataset\n";
     std::cout << "  kaggle-dl <owner/dataset> [dir]  Download entire dataset\n";
     std::cout << "  kaggle-file <owner/dataset> <filename>  Download specific file\n\n";
+    std::cout << "Cache Commands:\n";
+    std::cout << "  cache-stats                  Show cache statistics\n";
+    std::cout << "  cache-clean                  Remove unused cache entries\n\n";
     std::cout << "Options:\n";
     std::cout << "  --token <token>              HuggingFace API token (or set HF_TOKEN env var)\n";
     std::cout << "  --kaggle-user <username>     Kaggle username (or set KAGGLE_USERNAME env var)\n";
@@ -182,6 +186,37 @@ int cmd_kaggle_file(const std::string& dataset_id, const std::string& filename,
     return 0;
 }
 
+int cmd_cache_stats() {
+    CacheManager cache;
+    auto stats = cache.get_stats();
+    
+    std::cout << "Cache Statistics\n";
+    std::cout << "================\n\n";
+    std::cout << std::format("Total files:         {}\n", stats.total_files);
+    std::cout << std::format("Total size:          {:.2f} MB\n", stats.total_size / (1024.0 * 1024.0));
+    std::cout << std::format("Deduplicated files:  {}\n", stats.deduplicated_files);
+    std::cout << std::format("Space saved:         {:.2f} MB\n\n", stats.space_saved / (1024.0 * 1024.0));
+    
+    if (!stats.hash_refs.empty()) {
+        std::cout << "Duplicate files:\n";
+        for (const auto& [hash, count] : stats.hash_refs) {
+            if (count > 1) {
+                std::cout << std::format("  {} ({}x)\n", hash.substr(0, 16) + "...", count);
+            }
+        }
+    }
+    
+    return 0;
+}
+
+int cmd_cache_clean() {
+    CacheManager cache;
+    size_t removed = cache.clean_unused();
+    
+    std::cout << std::format("✓ Removed {} unused cache entries\n", removed);
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -276,6 +311,12 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         return cmd_kaggle_file(args[0], args[1], kaggle_user, kaggle_key);
+    }
+    else if (command == "cache-stats") {
+        return cmd_cache_stats();
+    }
+    else if (command == "cache-clean") {
+        return cmd_cache_clean();
     }
     else {
         std::cerr << std::format("Unknown command: {}\n", command);

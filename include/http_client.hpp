@@ -41,6 +41,7 @@ struct HttpConfig {
     bool enable_http2 = true;
     bool enable_tcp_nodelay = true;
     bool enable_tcp_keepalive = true;
+    bool enable_resume = true;
 };
 
 class HttpClient {
@@ -60,7 +61,8 @@ public:
     std::expected<void, HttpErrorInfo> download_file(
         const std::string& url,
         const std::filesystem::path& output_path,
-        ProgressCallback progress_callback = nullptr
+        ProgressCallback progress_callback = nullptr,
+        size_t resume_offset = 0
     );
     
     // GET request returning response body as string

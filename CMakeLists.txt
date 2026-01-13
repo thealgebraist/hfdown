@@ -15,6 +15,7 @@ add_executable(hfdown
     src/http_client.cpp
     src/hf_client.cpp
     src/kaggle_client.cpp
+    src/cache_manager.cpp
     src/socket_wrapper.cpp
     src/tls_socket.cpp
     src/http_protocol.cpp

@@ -142,13 +142,22 @@ std::expected<std::string, HttpErrorInfo> HttpClient::get(const std::string& url
 template<typename SocketType, typename RedirectHandler>
 std::expected<void, HttpErrorInfo> download_impl(SocketType& socket, const UrlParts& parts,
     const std::filesystem::path& output_path, const std::map<std::string, std::string>& headers,
-    ProgressCallback progress_callback, const HttpConfig& config, RedirectHandler&& redirect) {
+    ProgressCallback progress_callback, const HttpConfig& config, RedirectHandler&& redirect, size_t resume_offset) {
     auto temp_path = std::filesystem::path(output_path).concat(".incomplete");
-    std::ofstream file(temp_path, std::ios::binary);
+    std::ios::openmode mode = std::ios::binary;
+    if (resume_offset > 0 && std::filesystem::exists(temp_path)) {
+        mode |= std::ios::app;
+    }
+    std::ofstream file(temp_path, mode);
     std::vector<char> file_buffer(config.file_buffer_size);
     file.rdbuf()->pubsetbuf(file_buffer.data(), config.file_buffer_size);
     
-    HttpRequest request{.method = "GET", .path = parts.path, .host = parts.host, .headers = headers};
+    auto request_headers = headers;
+    if (resume_offset > 0 && config.enable_resume) {
+        request_headers["Range"] = std::format("bytes={}-", resume_offset);
+    }
+    
+    HttpRequest request{.method = "GET", .path = parts.path, .host = parts.host, .headers = request_headers};
     auto request_str = HttpProtocol::build_request(request);
     if (auto write_res = socket.write(std::span{request_str.data(), request_str.size()}); !write_res) {
         return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to send request"});
@@ -170,7 +179,7 @@ std::expected<void, HttpErrorInfo> download_impl(SocketType& socket, const UrlPa
     if (response->status_code >= 400) { std::filesystem::remove(temp_path); return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", response->status_code), response->status_code}); }
     
     auto last_time = std::chrono::steady_clock::now();
-    size_t downloaded = 0, last_downloaded = 0;
+    size_t downloaded = resume_offset, last_downloaded = resume_offset;
     std::vector<char> buffer(config.buffer_size);
     
     auto update_progress = [&]() {
@@ -215,7 +224,8 @@ std::expected<void, HttpErrorInfo> download_impl(SocketType& socket, const UrlPa
 std::expected<void, HttpErrorInfo> HttpClient::download_file(
     const std::string& url,
     const std::filesystem::path& output_path,
-    ProgressCallback progress_callback
+    ProgressCallback progress_callback,
+    size_t resume_offset
 ) {
     auto parts = parse_url(url);
     
@@ -225,26 +235,32 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
         if (ec) return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, std::format("Failed to create directories: {}", ec.message())});
     }
     
+    // Check for incomplete file and resume if enabled
+    auto temp_path = std::filesystem::path(output_path).concat(".incomplete");
+    if (pImpl_->config.enable_resume && std::filesystem::exists(temp_path) && resume_offset == 0) {
+        resume_offset = std::filesystem::file_size(temp_path);
+    }
+    
     if (parts.protocol == "https") {
         TlsSocket socket;
         socket.set_timeout(pImpl_->timeout);
         if (auto conn = socket.connect(parts.host, parts.port); !conn) {
             return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
         }
-        auto redirect = [this, &output_path, &progress_callback](const std::string& url) {
-            return this->download_file(url, output_path, progress_callback);
+        auto redirect = [this, &output_path, &progress_callback, resume_offset](const std::string& url) {
+            return this->download_file(url, output_path, progress_callback, resume_offset);
         };
-        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config, redirect);
+        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config, redirect, resume_offset);
     } else {
         Socket socket;
         socket.set_timeout(pImpl_->timeout);
         if (auto conn = socket.connect(parts.host, parts.port); !conn) {
             return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
         }
-        auto redirect = [this, &output_path, &progress_callback](const std::string& url) {
-            return this->download_file(url, output_path, progress_callback);
+        auto redirect = [this, &output_path, &progress_callback, resume_offset](const std::string& url) {
+            return this->download_file(url, output_path, progress_callback, resume_offset);
         };
-        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config, redirect);
+        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config, redirect, resume_offset);
     }
 }
 
