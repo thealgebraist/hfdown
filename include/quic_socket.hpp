@@ -34,9 +34,18 @@ public:
 private:
     int udp_fd_;
     bool connected_;
-    void* quic_conn_;  // Opaque pointer to QUIC connection
-    void* quic_stream_; // Opaque pointer to QUIC stream
+    void* quic_conn_;  // Opaque pointer to QUIC connection (quiche)
+    void* quic_stream_; // Opaque pointer to QUIC stream (for H3)
+#ifdef USE_QUIC
+    void* conn_ = nullptr;
+    void* config_ = nullptr;
+    void* h3_config_ = nullptr;
+    void* h3_conn_ = nullptr;
+    uint64_t h3_stream_id_ = 0;
+#endif
     std::vector<char> recv_buffer_;
+    struct sockaddr_storage peer_addr_;
+    socklen_t peer_addr_len_ = 0;
     
     std::expected<void, QuicError> init_quic();
     std::expected<void, QuicError> handshake();
