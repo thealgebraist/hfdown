@@ -1,7 +1,12 @@
 #include "hf_client.hpp"
 #include "kaggle_client.hpp"
 #include "cache_manager.hpp"
+#include "github_client.hpp"
+#include "file_monitor.hpp"
+#include "git_uploader.hpp"
+#include "secret_scanner.hpp"
 #include <iostream>
+#include <sstream>
 #include <format>
 #include <string>
 #include <cstring>
@@ -25,10 +30,20 @@ void print_usage(const char* program_name) {
     std::cout << "Cache Commands:\n";
     std::cout << "  cache-stats                  Show cache statistics\n";
     std::cout << "  cache-clean                  Remove unused cache entries\n\n";
+    std::cout << "GitHub Commands:\n";
+    std::cout << "  monitor <dir> <owner/repo>   Watch directory and upload files to GitHub\n\n";
+    std::cout << "Git Commands (no token needed - uses SSH/credentials):\n";
+    std::cout << "  git-push <repo-dir> <file>   Add, commit and push file using git CLI\n";
+    std::cout << "  git-watch <repo-dir>         Watch repo and auto-push changes\n";
+    std::cout << "  install-hook <repo-dir>      Install pre-commit hook to block secrets\n";
+    std::cout << "  scan-secrets <file>          Scan file for API keys/tokens\n\n";
     std::cout << "Options:\n";
     std::cout << "  --token <token>              HuggingFace API token (or set HF_TOKEN env var)\n";
     std::cout << "  --kaggle-user <username>     Kaggle username (or set KAGGLE_USERNAME env var)\n";
     std::cout << "  --kaggle-key <key>           Kaggle API key (or set KAGGLE_KEY env var)\n";
+    std::cout << "  --github-token <token>       GitHub token (or set GITHUB_TOKEN env var)\n";
+    std::cout << "  --extensions <ext,...>       File extensions to monitor (e.g., png,jpg,wav)\n";
+    std::cout << "  --skip-secrets               Skip secret scanning (use for trusted files)\n";
     std::cout << "  --help                       Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << std::format("  {} info microsoft/phi-2\n", program_name);
@@ -36,6 +51,7 @@ void print_usage(const char* program_name) {
     std::cout << std::format("  {} file gpt2 config.json\n", program_name);
     std::cout << std::format("  {} kaggle-info pytorch/imagenet\n", program_name);
     std::cout << std::format("  {} kaggle-dl pytorch/imagenet ./datasets/imagenet\n", program_name);
+    std::cout << std::format("  {} monitor ./outputs user/repo --extensions png,jpg,wav\n", program_name);
 }
 
 void print_progress_bar(const DownloadProgress& progress) {
@@ -217,6 +233,171 @@ int cmd_cache_clean() {
     return 0;
 }
 
+std::vector<std::string> split_string(const std::string& str, char delimiter) {
+    std::vector<std::string> tokens;
+    std::istringstream iss(str);
+    std::string token;
+    while (std::getline(iss, token, delimiter)) {
+        if (!token.empty()) tokens.push_back(token);
+    }
+    return tokens;
+}
+
+int cmd_git_push(const std::string& repo_dir, const std::string& file_path, bool skip_secrets) {
+    GitUploader git(repo_dir);
+    
+    if (!git.is_git_repo()) {
+        std::cerr << "Error: Not a git repository: " << repo_dir << "\n";
+        return 1;
+    }
+    
+    auto file = std::filesystem::path(repo_dir) / file_path;
+    
+    if (!skip_secrets) {
+        SecretScanner scanner;
+        if (scanner.has_secrets(file)) {
+            std::cerr << "⚠️  Secret detected in " << file_path << " - commit blocked\n";
+            std::cerr << "Use --skip-secrets to bypass this check\n";
+            auto secrets = scanner.find_secrets(file);
+            for (const auto& s : secrets) std::cerr << "  " << s << "\n";
+            return 1;
+        }
+    }
+    
+    auto result = git.add_and_push(file, std::format("Add {}", std::filesystem::path(file_path).filename().string()));
+    
+    if (!result) {
+        std::cerr << "Error: " << result.error().message << "\n";
+        return 1;
+    }
+    
+    std::cout << "✓ Pushed " << file_path << "\n";
+    return 0;
+}
+
+int cmd_git_watch(const std::string& repo_dir, const std::vector<std::string>& extensions, bool skip_secrets) {
+    GitUploader git(repo_dir);
+    SecretScanner scanner;
+    
+    if (!git.is_git_repo()) {
+        std::cerr << "Error: Not a git repository: " << repo_dir << "\n";
+        return 1;
+    }
+    
+    FileMonitor monitor(repo_dir);
+    
+    if (!extensions.empty()) {
+        monitor.set_extensions(extensions);
+        std::cout << "Monitoring extensions: ";
+        for (const auto& ext : extensions) std::cout << ext << " ";
+        std::cout << "\n";
+    }
+    
+    std::cout << std::format("Watching: {} (git push)\n", repo_dir);
+    std::cout << std::format("Secret scanning: {}\n", skip_secrets ? "disabled" : "enabled");
+    std::cout << "Press Ctrl+C to stop...\n\n";
+    
+    monitor.start([&](const FileChange& change) {
+        if (change.type == FileChangeType::Deleted) return;
+        
+        auto relative = std::filesystem::relative(change.path, repo_dir);
+        std::cout << std::format("Uploading: {}... ", relative.string());
+        
+        if (!skip_secrets && scanner.has_secrets(change.path)) {
+            std::cout << "⚠️  Secret detected - skipped\n";
+            return;
+        }
+        
+        auto result = git.add_and_push(change.path, 
+                                       std::format("Update {}", change.path.filename().string()));
+        
+        if (result) std::cout << "✓\n";
+        else std::cout << "✗ " << result.error().message << "\n";
+    });
+    
+    return 0;
+}
+
+int cmd_install_hook(const std::string& repo_dir) {
+    if (SecretScanner::install_hook(repo_dir)) {
+        std::cout << "✓ Installed pre-commit hook in " << repo_dir << "/.git/hooks/pre-commit\n";
+        std::cout << "  This will block commits containing secrets\n";
+        return 0;
+    }
+    std::cerr << "Error: Failed to install hook\n";
+    return 1;
+}
+
+int cmd_scan_secrets(const std::string& file_path) {
+    SecretScanner scanner;
+    auto path = std::filesystem::path(file_path);
+    
+    if (!std::filesystem::exists(path)) {
+        std::cerr << "Error: File not found: " << file_path << "\n";
+        return 1;
+    }
+    
+    auto secrets = scanner.find_secrets(path);
+    
+    if (secrets.empty()) {
+        std::cout << "✓ No secrets detected in " << file_path << "\n";
+        return 0;
+    }
+    
+    std::cout << "⚠️  Secrets detected in " << file_path << ":\n";
+    for (const auto& s : secrets) {
+        std::cout << "  " << s << "\n";
+    }
+    
+    return 1;
+}
+
+int cmd_monitor(const std::string& watch_dir, const std::string& repo_id, 
+               const std::string& github_token, const std::vector<std::string>& extensions) {
+    auto slash_pos = repo_id.find('/');
+    if (slash_pos == std::string::npos) {
+        std::cerr << "Error: repo-id must be in format 'owner/repo'\n";
+        return 1;
+    }
+    
+    std::string owner = repo_id.substr(0, slash_pos);
+    std::string repo = repo_id.substr(slash_pos + 1);
+    
+    GitHubClient github(github_token, owner, repo);
+    FileMonitor monitor(watch_dir);
+    
+    if (!extensions.empty()) {
+        monitor.set_extensions(extensions);
+        std::cout << "Monitoring extensions: ";
+        for (const auto& ext : extensions) std::cout << ext << " ";
+        std::cout << "\n";
+    }
+    
+    std::cout << std::format("Watching: {} → {}/{}\n", watch_dir, owner, repo);
+    std::cout << "Press Ctrl+C to stop...\n\n";
+    
+    monitor.start([&](const FileChange& change) {
+        std::string change_type = change.type == FileChangeType::Added ? "Added" :
+                                 change.type == FileChangeType::Modified ? "Modified" : "Deleted";
+        
+        std::cout << std::format("[{}] {}\n", change_type, change.path.filename().string());
+        
+        if (change.type != FileChangeType::Deleted) {
+            auto relative = std::filesystem::relative(change.path, watch_dir);
+            auto result = github.upload_file(change.path, relative.string(), 
+                                           std::format("Upload {}", change.path.filename().string()));
+            
+            if (result) {
+                std::cout << std::format("  ✓ Uploaded to {}/{}\n", owner, repo);
+            } else {
+                std::cout << std::format("  ✗ Upload failed: {}\n", result.error().message);
+            }
+        }
+    });
+    
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -245,8 +426,16 @@ int main(int argc, char* argv[]) {
         kaggle_key = env_key;
     }
     
+    // Get GitHub token
+    std::string github_token;
+    if (const char* env_token = std::getenv("GITHUB_TOKEN")) {
+        github_token = env_token;
+    }
+    
     // Parse command line arguments
     std::vector<std::string> args;
+    std::vector<std::string> extensions;
+    bool skip_secrets = false;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--token" && i + 1 < argc) {
@@ -255,6 +444,12 @@ int main(int argc, char* argv[]) {
             kaggle_user = argv[++i];
         } else if (arg == "--kaggle-key" && i + 1 < argc) {
             kaggle_key = argv[++i];
+        } else if (arg == "--github-token" && i + 1 < argc) {
+            github_token = argv[++i];
+        } else if (arg == "--extensions" && i + 1 < argc) {
+            extensions = split_string(argv[++i], ',');
+        } else if (arg == "--skip-secrets") {
+            skip_secrets = true;
         } else {
             args.push_back(arg);
         }
@@ -317,6 +512,46 @@ int main(int argc, char* argv[]) {
     }
     else if (command == "cache-clean") {
         return cmd_cache_clean();
+    }
+    else if (command == "git-push") {
+        if (args.size() < 2) {
+            std::cerr << "Error: repo-dir and file path required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_git_push(args[0], args[1], skip_secrets);
+    }
+    else if (command == "git-watch") {
+        if (args.empty()) {
+            std::cerr << "Error: repo-dir required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_git_watch(args[0], extensions, skip_secrets);
+    }
+    else if (command == "install-hook") {
+        if (args.empty()) {
+            std::cerr << "Error: repo-dir required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_install_hook(args[0]);
+    }
+    else if (command == "scan-secrets") {
+        if (args.empty()) {
+            std::cerr << "Error: file path required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_scan_secrets(args[0]);
+    }
+    else if (command == "monitor") {
+        if (args.size() < 2) {
+            std::cerr << "Error: directory and repo-id required (format: owner/repo)\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_monitor(args[0], args[1], github_token, extensions);
     }
     else {
         std::cerr << std::format("Unknown command: {}\n", command);
