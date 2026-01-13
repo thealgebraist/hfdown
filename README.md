@@ -217,11 +217,87 @@ If you get "Model not found" errors, ensure:
 3. YouHuggingFace cache format compatibility (`.cache/huggingface/hub` structure)
 - [ ]  have internet connectivity
 
+## Rsync-like Transfer (New!)
+
+HFDown now supports rsync-like incremental transfers that work seamlessly with Vast.ai GPU instances!
+
+### Features
+
+- **Incremental Sync**: Only downloads files that are new or have changed (compares size and SHA256 checksums)
+- **Resume Support**: Built on top of the existing HTTP resume capability
+- **Vast.ai Integration**: Direct sync to remote GPU instances via SSH/SCP
+- **Dry-run Mode**: Preview what would be synced without downloading
+- **Smart Comparison**: Uses Git LFS object IDs for accurate file comparison
+
+### Usage
+
+#### Sync to Local Directory
+
+Incrementally sync a model to a local directory (only downloads new/changed files):
+
+```bash
+# First sync - downloads all files
+./hfdown rsync-sync gpt2 ./models/gpt2
+
+# Subsequent syncs - only downloads what changed
+./hfdown rsync-sync gpt2 ./models/gpt2
+
+# Dry-run to see what would be synced
+./hfdown rsync-sync gpt2 ./models/gpt2 --dry-run --verbose
+
+# Faster sync without checksum verification (less safe)
+./hfdown rsync-sync gpt2 ./models/gpt2 --no-checksum
+```
+
+#### Sync to Vast.ai Instance
+
+Download models directly to your Vast.ai GPU instance:
+
+```bash
+# Get your Vast.ai SSH command from the web interface
+# Example: "ssh -p 12345 root@1.2.3.4"
+
+# Sync model to remote instance
+./hfdown rsync-to-vast gpt2 'ssh -p 12345 root@1.2.3.4' /workspace/models/gpt2
+
+# With authentication key
+./hfdown rsync-to-vast gpt2 'ssh -p 12345 -i ~/.ssh/vast_key root@1.2.3.4' /workspace/models
+
+# Dry-run to test connection
+./hfdown rsync-to-vast gpt2 'ssh -p 12345 root@1.2.3.4' /workspace/models --dry-run --verbose
+```
+
+### How It Works
+
+1. **Initial Download**: On first sync, downloads all model files
+2. **Subsequent Syncs**: 
+   - Compares local files against remote model info
+   - Checks file size and SHA256 checksums (Git LFS OIDs)
+   - Only downloads files that don't exist or have mismatched checksums
+3. **Remote Sync**: Downloads to temp directory, then transfers via SCP
+
+### Comparison with rsync
+
+| Feature | hfdown rsync | traditional rsync |
+|---------|--------------|-------------------|
+| Incremental sync | ✅ | ✅ |
+| Resume downloads | ✅ | ✅ |
+| Checksum verification | ✅ (SHA256) | ✅ (MD5/SHA) |
+| Remote sync via SSH | ✅ | ✅ |
+| Direct from HuggingFace | ✅ | ❌ |
+| Delta transfers | ❌ | ✅ |
+
+### Options
+
+- `--verbose`: Show detailed progress for each file
+- `--dry-run`: Preview what would be synced without downloading
+- `--no-checksum`: Skip checksum verification (faster but less safe, only compares sizes)
+- `--token <token>`: HuggingFace API token for private models
+
 ## Future Enhancements
 
+- [x] Rsync-like incremental downloads
 - [ ] Parallel file downloads
-- [ ] Resume interrupted downloads
-- [ ] Model verification (checksums)
 - [ ] Custom branch/revision support
 - [ ] Cache management
 - [ ] Compression support
@@ -230,3 +306,4 @@ If you get "Model not found" errors, ensure:
 
 - [HuggingFace Hub Documentation](https://huggingface.co/docs/hub/index)
 - [HuggingFace Models](https://huggingface.co/models)
+- [Vast.ai Documentation](https://vast.ai/docs/)

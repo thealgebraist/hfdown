@@ -5,6 +5,8 @@
 #include <vector>
 #include <expected>
 #include <map>
+#include <optional>
+#include <array>
 
 namespace hfdown {
 
