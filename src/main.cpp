@@ -6,6 +6,7 @@
 #include "git_uploader.hpp"
 #include "secret_scanner.hpp"
 #include "http3_client.hpp"
+#include "rsync_client.hpp"
 #include <iostream>
 #include <sstream>
 #include <format>
@@ -25,6 +26,9 @@ void print_usage(const char* program_name) {
     std::cout << "  info <model-id>              Get information about a model\n";
     std::cout << "  download <model-id> [dir]    Download entire model to directory\n";
     std::cout << "  file <model-id> <filename>   Download a specific file from model\n\n";
+    std::cout << "Rsync Commands (incremental/resumable downloads):\n";
+    std::cout << "  rsync-sync <model-id> <dir>  Sync model to local dir (only download new/changed)\n";
+    std::cout << "  rsync-to-vast <model-id> <ssh-cmd> <remote-path>  Sync to Vast.ai instance\n\n";
     std::cout << "HTTP/3 Commands:\n";
     std::cout << "  http3-test <url>             Test HTTP/3 connection with fallback\n";
     std::cout << "  http3-bench <url>            Benchmark HTTP/3 vs HTTP/1.1 speed\n\n";
@@ -50,11 +54,16 @@ void print_usage(const char* program_name) {
     std::cout << "  --extensions <ext,...>       File extensions to monitor (e.g., png,jpg,wav)\n";
     std::cout << "  --skip-secrets               Skip secret scanning (use for trusted files)\n";
     std::cout << "  --protocol <h3|h2|http/1.1>  Force specific HTTP protocol version\n";
+    std::cout << "  --verbose                    Show detailed sync progress\n";
+    std::cout << "  --dry-run                    Show what would be synced without downloading\n";
+    std::cout << "  --no-checksum                Skip checksum verification (faster but less safe)\n";
     std::cout << "  --help                       Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << std::format("  {} info microsoft/phi-2\n", program_name);
     std::cout << std::format("  {} download gpt2 ./models/gpt2\n", program_name);
     std::cout << std::format("  {} file gpt2 config.json\n", program_name);
+    std::cout << std::format("  {} rsync-sync gpt2 ./models/gpt2\n", program_name);
+    std::cout << std::format("  {} rsync-to-vast gpt2 'ssh -p 12345 root@1.2.3.4' /workspace/models\n", program_name);
     std::cout << std::format("  {} kaggle-info pytorch/imagenet\n", program_name);
     std::cout << std::format("  {} kaggle-dl pytorch/imagenet ./datasets/imagenet\n", program_name);
     std::cout << std::format("  {} monitor ./outputs user/repo --extensions png,jpg,wav\n", program_name);
@@ -481,6 +490,72 @@ int cmd_http3_bench(const std::string& url) {
     return 0;
 }
 
+int cmd_rsync_sync(const std::string& model_id, const std::string& output_dir,
+                  const std::string& token, const RsyncConfig& config) {
+    RsyncClient rsync_client(token);
+    
+    std::cout << std::format("Syncing model: {} to {}\n", model_id, output_dir);
+    if (config.dry_run) {
+        std::cout << "DRY RUN MODE - No files will be downloaded\n";
+    }
+    
+    auto result = rsync_client.sync_to_local(model_id, output_dir, config, print_progress_bar);
+    
+    if (!result) {
+        std::cerr << std::format("Error: {}\n", result.error().message);
+        return 1;
+    }
+    
+    const auto& stats = *result;
+    std::cout << "\nSync Summary:\n";
+    std::cout << std::format("  Total files:      {}\n", stats.total_files);
+    std::cout << std::format("  Files unchanged:  {}\n", stats.files_unchanged);
+    std::cout << std::format("  Files downloaded: {}\n", stats.files_to_download);
+    std::cout << std::format("  Bytes downloaded: {:.2f} MB\n", 
+                            stats.bytes_downloaded / (1024.0 * 1024.0));
+    
+    return 0;
+}
+
+int cmd_rsync_to_vast(const std::string& model_id, const std::string& ssh_cmd,
+                     const std::string& remote_path, const std::string& token,
+                     const RsyncConfig& config) {
+    RsyncClient rsync_client(token);
+    
+    // Parse Vast.ai SSH command
+    auto ssh_config = RsyncClient::parse_vast_ssh(ssh_cmd, remote_path);
+    if (!ssh_config) {
+        std::cerr << std::format("Error: {}\n", ssh_config.error().message);
+        std::cerr << "Expected format: 'ssh -p PORT root@IP' or 'ssh -p PORT -i KEY root@IP'\n";
+        return 1;
+    }
+    
+    std::cout << std::format("Syncing model: {} to {}@{}:{}\n",
+                            model_id, ssh_config->username, ssh_config->host, 
+                            ssh_config->remote_path);
+    
+    if (config.dry_run) {
+        std::cout << "DRY RUN MODE - No files will be transferred\n";
+    }
+    
+    auto result = rsync_client.sync_to_remote(model_id, *ssh_config, config, print_progress_bar);
+    
+    if (!result) {
+        std::cerr << std::format("Error: {}\n", result.error().message);
+        return 1;
+    }
+    
+    const auto& stats = *result;
+    std::cout << "\nSync Summary:\n";
+    std::cout << std::format("  Total files:      {}\n", stats.total_files);
+    std::cout << std::format("  Files unchanged:  {}\n", stats.files_unchanged);
+    std::cout << std::format("  Files transferred: {}\n", stats.files_to_download);
+    std::cout << std::format("  Bytes transferred: {:.2f} MB\n", 
+                            stats.bytes_downloaded / (1024.0 * 1024.0));
+    
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -520,6 +595,9 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> extensions;
     bool skip_secrets = false;
     std::string protocol;
+    bool verbose = false;
+    bool dry_run = false;
+    bool no_checksum = false;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--token" && i + 1 < argc) {
@@ -536,6 +614,12 @@ int main(int argc, char* argv[]) {
             skip_secrets = true;
         } else if (arg == "--protocol" && i + 1 < argc) {
             protocol = argv[++i];
+        } else if (arg == "--verbose") {
+            verbose = true;
+        } else if (arg == "--dry-run") {
+            dry_run = true;
+        } else if (arg == "--no-checksum") {
+            no_checksum = true;
         } else {
             args.push_back(arg);
         }
@@ -638,6 +722,30 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         return cmd_monitor(args[0], args[1], github_token, extensions);
+    }
+    else if (command == "rsync-sync") {
+        if (args.size() < 2) {
+            std::cerr << "Error: model-id and output directory required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        RsyncConfig config;
+        config.verbose = verbose;
+        config.dry_run = dry_run;
+        config.check_checksum = !no_checksum;
+        return cmd_rsync_sync(args[0], args[1], token, config);
+    }
+    else if (command == "rsync-to-vast") {
+        if (args.size() < 3) {
+            std::cerr << "Error: model-id, ssh-command, and remote-path required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        RsyncConfig config;
+        config.verbose = verbose;
+        config.dry_run = dry_run;
+        config.check_checksum = !no_checksum;
+        return cmd_rsync_to_vast(args[0], args[1], args[2], token, config);
     }
     else if (command == "http3-test") {
         if (args.empty()) {

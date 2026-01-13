@@ -1,5 +1,6 @@
 #include "tls_socket.hpp"
 #include <format>
+#include <algorithm>
 
 namespace hfdown {
 
