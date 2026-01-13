@@ -5,6 +5,7 @@
 #include "file_monitor.hpp"
 #include "git_uploader.hpp"
 #include "secret_scanner.hpp"
+#include "http3_client.hpp"
 #include <iostream>
 #include <sstream>
 #include <format>
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <iomanip>
+#include <chrono>
 
 using namespace hfdown;
 
@@ -23,6 +25,9 @@ void print_usage(const char* program_name) {
     std::cout << "  info <model-id>              Get information about a model\n";
     std::cout << "  download <model-id> [dir]    Download entire model to directory\n";
     std::cout << "  file <model-id> <filename>   Download a specific file from model\n\n";
+    std::cout << "HTTP/3 Commands:\n";
+    std::cout << "  http3-test <url>             Test HTTP/3 connection with fallback\n";
+    std::cout << "  http3-bench <url>            Benchmark HTTP/3 vs HTTP/1.1 speed\n\n";
     std::cout << "Kaggle Commands:\n";
     std::cout << "  kaggle-info <owner/dataset>  Get information about a dataset\n";
     std::cout << "  kaggle-dl <owner/dataset> [dir]  Download entire dataset\n";
@@ -44,6 +49,7 @@ void print_usage(const char* program_name) {
     std::cout << "  --github-token <token>       GitHub token (or set GITHUB_TOKEN env var)\n";
     std::cout << "  --extensions <ext,...>       File extensions to monitor (e.g., png,jpg,wav)\n";
     std::cout << "  --skip-secrets               Skip secret scanning (use for trusted files)\n";
+    std::cout << "  --protocol <h3|h2|http/1.1>  Force specific HTTP protocol version\n";
     std::cout << "  --help                       Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << std::format("  {} info microsoft/phi-2\n", program_name);
@@ -398,6 +404,83 @@ int cmd_monitor(const std::string& watch_dir, const std::string& repo_id,
     return 0;
 }
 
+int cmd_http3_test(const std::string& url, const std::string& protocol) {
+    Http3Client client;
+    
+    if (!protocol.empty()) {
+        client.set_protocol(protocol);
+        std::cout << std::format("Testing with forced protocol: {}\n", protocol);
+    } else {
+        std::cout << "Testing with automatic protocol negotiation (HTTP/3 → HTTP/2 → HTTP/1.1)\n";
+    }
+    
+    std::cout << std::format("Fetching: {}\n", url);
+    
+    auto start = std::chrono::high_resolution_clock::now();
+    auto result = client.get(url);
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    if (!result) {
+        std::cerr << std::format("Error: {}\n", result.error().message);
+        return 1;
+    }
+    
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    
+    std::cout << std::format("✓ Success in {}ms\n", duration.count());
+    std::cout << std::format("  Status: {}\n", result->status_code);
+    std::cout << std::format("  Body size: {} bytes\n", result->body.size());
+    
+    return 0;
+}
+
+int cmd_http3_bench(const std::string& url) {
+    std::cout << "Benchmarking HTTP protocols...\n\n";
+    
+    // Test HTTP/3
+    Http3Client h3_client;
+    h3_client.set_protocol("h3");
+    
+    std::cout << "[1/2] Testing HTTP/3 (QUIC)...\n";
+    auto h3_start = std::chrono::high_resolution_clock::now();
+    auto h3_result = h3_client.get(url);
+    auto h3_end = std::chrono::high_resolution_clock::now();
+    auto h3_duration = std::chrono::duration_cast<std::chrono::milliseconds>(h3_end - h3_start);
+    
+    // Test HTTP/1.1
+    Http3Client h1_client;
+    h1_client.set_protocol("http/1.1");
+    
+    std::cout << "[2/2] Testing HTTP/1.1 (TCP+TLS)...\n\n";
+    auto h1_start = std::chrono::high_resolution_clock::now();
+    auto h1_result = h1_client.get(url);
+    auto h1_end = std::chrono::high_resolution_clock::now();
+    auto h1_duration = std::chrono::duration_cast<std::chrono::milliseconds>(h1_end - h1_start);
+    
+    std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    std::cout << "RESULTS:\n";
+    std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    
+    if (h3_result) {
+        std::cout << std::format("HTTP/3:   {}ms ✓\n", h3_duration.count());
+    } else {
+        std::cout << std::format("HTTP/3:   FAILED ({})\n", h3_result.error().message);
+    }
+    
+    if (h1_result) {
+        std::cout << std::format("HTTP/1.1: {}ms ✓\n", h1_duration.count());
+    } else {
+        std::cout << std::format("HTTP/1.1: FAILED ({})\n", h1_result.error().message);
+    }
+    
+    if (h3_result && h1_result) {
+        auto speedup = static_cast<double>(h1_duration.count()) / h3_duration.count();
+        std::cout << std::format("\nSpeedup: {:.2f}x\n", speedup);
+    }
+    
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -436,6 +519,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> args;
     std::vector<std::string> extensions;
     bool skip_secrets = false;
+    std::string protocol;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--token" && i + 1 < argc) {
@@ -450,6 +534,8 @@ int main(int argc, char* argv[]) {
             extensions = split_string(argv[++i], ',');
         } else if (arg == "--skip-secrets") {
             skip_secrets = true;
+        } else if (arg == "--protocol" && i + 1 < argc) {
+            protocol = argv[++i];
         } else {
             args.push_back(arg);
         }
@@ -552,6 +638,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         return cmd_monitor(args[0], args[1], github_token, extensions);
+    }
+    else if (command == "http3-test") {
+        if (args.empty()) {
+            std::cerr << "Error: URL required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_http3_test(args[0], protocol);
+    }
+    else if (command == "http3-bench") {
+        if (args.empty()) {
+            std::cerr << "Error: URL required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_http3_bench(args[0]);
     }
     else {
         std::cerr << std::format("Unknown command: {}\n", command);

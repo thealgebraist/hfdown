@@ -23,6 +23,7 @@ struct HttpResponse {
     std::map<std::string, std::string> headers;
     size_t content_length = 0;
     bool chunked = false;
+    std::string body;  // For small responses (http3-test)
 };
 
 class HttpProtocol {

@@ -25,7 +25,9 @@ enum class HttpError {
     InvalidUrl,
     FileWriteError,
     HttpStatusError,
-    Timeout
+    Timeout,
+    ConnectionFailed,
+    ProtocolError
 };
 
 struct HttpErrorInfo {
