@@ -60,6 +60,49 @@ static int recv_stream_data_cb(ngtcp2_conn*, uint32_t flags, int64_t stream_id, 
     return 0;
 }
 
+// nghttp3 callbacks: collect headers and body into QuicSocket maps
+static int h3_begin_headers_cb(nghttp3_conn* /*conn*/, int64_t stream_id, void* conn_user_data, void* stream_user_data) {
+    (void)conn_user_data; (void)stream_user_data;
+    auto* s = static_cast<QuicSocket*>(conn_user_data ? conn_user_data : stream_user_data);
+    if (!s) return 0;
+    s->h3_headers_[stream_id] = std::string();
+    return 0;
+}
+
+static int h3_recv_header_cb(nghttp3_conn* /*conn*/, int64_t stream_id, int32_t /*token*/, nghttp3_rcbuf *name, nghttp3_rcbuf *value, uint8_t /*flags*/, void* conn_user_data, void* stream_user_data) {
+    auto* s = static_cast<QuicSocket*>(conn_user_data ? conn_user_data : stream_user_data);
+    if (!s) return 0;
+    nghttp3_vec nvec = nghttp3_rcbuf_get_buf(name);
+    nghttp3_vec vvec = nghttp3_rcbuf_get_buf(value);
+    auto& out = s->h3_headers_[stream_id];
+    out.append(reinterpret_cast<const char*>(nvec.base), nvec.len);
+    out.append(": ");
+    out.append(reinterpret_cast<const char*>(vvec.base), vvec.len);
+    out.append("\n");
+    return 0;
+}
+
+static int h3_end_headers_cb(nghttp3_conn* /*conn*/, int64_t /*stream_id*/, int /*fin*/, void* conn_user_data, void* stream_user_data) {
+    (void)conn_user_data; (void)stream_user_data;
+    return 0;
+}
+
+static int h3_recv_data_cb(nghttp3_conn* /*conn*/, int64_t stream_id, const uint8_t* data, size_t datalen, void* conn_user_data, void* stream_user_data) {
+    auto* s = static_cast<QuicSocket*>(conn_user_data ? conn_user_data : stream_user_data);
+    if (!s) return 0;
+    auto& out = s->h3_bodies_[stream_id];
+    out.append(reinterpret_cast<const char*>(data), datalen);
+    return 0;
+}
+
+static int h3_end_stream_cb(nghttp3_conn* /*conn*/, int64_t stream_id, void* conn_user_data, void* stream_user_data) {
+    (void)stream_user_data;
+    auto* s = static_cast<QuicSocket*>(conn_user_data ? conn_user_data : stream_user_data);
+    if (!s) return 0;
+    (void)stream_id;
+    return 0;
+}
+
 }
 #endif
 
@@ -89,6 +132,14 @@ void QuicSocket::close() {
     if (ng_conn_) {
         ngtcp2_conn_del(ng_conn_);
         ng_conn_ = nullptr;
+    }
+    if (ng_qpack_encoder_) {
+        nghttp3_qpack_encoder_del(ng_qpack_encoder_);
+        ng_qpack_encoder_ = nullptr;
+    }
+    if (ng_qpack_decoder_) {
+        nghttp3_qpack_decoder_del(ng_qpack_decoder_);
+        ng_qpack_decoder_ = nullptr;
     }
     if (ng_crypto_ctx_) {
         ngtcp2_crypto_ossl_ctx_del(reinterpret_cast<ngtcp2_crypto_ossl_ctx*>(ng_crypto_ctx_));
@@ -299,6 +350,11 @@ std::expected<void, QuicError> QuicSocket::handshake() {
     // nghttp3 callbacks/settings
     nghttp3_callbacks h3_callbacks;
     memset(&h3_callbacks, 0, sizeof(h3_callbacks));
+    h3_callbacks.begin_headers = h3_begin_headers_cb;
+    h3_callbacks.recv_header = h3_recv_header_cb;
+    h3_callbacks.end_headers = h3_end_headers_cb;
+    h3_callbacks.recv_data = h3_recv_data_cb;
+    h3_callbacks.end_stream = h3_end_stream_cb;
     nghttp3_settings h3_settings;
     nghttp3_settings_default(&h3_settings);
 
@@ -309,8 +365,117 @@ std::expected<void, QuicError> QuicSocket::handshake() {
         return std::unexpected(QuicError{"nghttp3_conn_client_new failed", rv});
     }
 
+    // Create QPACK encoder/decoder and bind QPACK uni streams
+    ng_qpack_encoder_ = nullptr;
+    ng_qpack_decoder_ = nullptr;
+    rv = nghttp3_qpack_encoder_new(&ng_qpack_encoder_, 0, nullptr);
+    if (rv != 0) {
+        nghttp3_conn_del(ng_h3conn_);
+        ng_h3conn_ = nullptr;
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+        return std::unexpected(QuicError{"nghttp3_qpack_encoder_new failed", rv});
+    }
+
+    rv = nghttp3_qpack_decoder_new(&ng_qpack_decoder_, 0, 0, nullptr);
+    if (rv != 0) {
+        nghttp3_qpack_encoder_del(ng_qpack_encoder_);
+        ng_qpack_encoder_ = nullptr;
+        nghttp3_conn_del(ng_h3conn_);
+        ng_h3conn_ = nullptr;
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+        return std::unexpected(QuicError{"nghttp3_qpack_decoder_new failed", rv});
+    }
+
+    // Open uni streams for qpack encoder/decoder and bind them
+    int64_t qenc_sid = -1, qdec_sid = -1;
+    rv = ngtcp2_conn_open_uni_stream(ng_conn_, &qenc_sid, nullptr);
+    if (rv != 0) {
+        nghttp3_qpack_decoder_del(ng_qpack_decoder_);
+        ng_qpack_decoder_ = nullptr;
+        nghttp3_qpack_encoder_del(ng_qpack_encoder_);
+        ng_qpack_encoder_ = nullptr;
+        nghttp3_conn_del(ng_h3conn_);
+        ng_h3conn_ = nullptr;
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+        return std::unexpected(QuicError{"ngtcp2_conn_open_uni_stream failed (qenc)", rv});
+    }
+
+    rv = ngtcp2_conn_open_uni_stream(ng_conn_, &qdec_sid, nullptr);
+    if (rv != 0) {
+        // best-effort close qenc stream not necessary here
+        nghttp3_qpack_decoder_del(ng_qpack_decoder_);
+        ng_qpack_decoder_ = nullptr;
+        nghttp3_qpack_encoder_del(ng_qpack_encoder_);
+        ng_qpack_encoder_ = nullptr;
+        nghttp3_conn_del(ng_h3conn_);
+        ng_h3conn_ = nullptr;
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+        return std::unexpected(QuicError{"ngtcp2_conn_open_uni_stream failed (qdec)", rv});
+    }
+
+    rv = nghttp3_conn_bind_qpack_streams(ng_h3conn_, qenc_sid, qdec_sid);
+    if (rv != 0) {
+        nghttp3_qpack_decoder_del(ng_qpack_decoder_);
+        ng_qpack_decoder_ = nullptr;
+        nghttp3_qpack_encoder_del(ng_qpack_encoder_);
+        ng_qpack_encoder_ = nullptr;
+        nghttp3_conn_del(ng_h3conn_);
+        ng_h3conn_ = nullptr;
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+        return std::unexpected(QuicError{"nghttp3_conn_bind_qpack_streams failed", rv});
+    }
+
+    // Drive basic handshake: send/recv packets until ngtcp2 reports handshake complete
+    recv_buffer_.resize(65536);
+    ngtcp2_pkt_info pi;
+    memset(&pi, 0, sizeof(pi));
+    pi.ecn = NGTCP2_ECN_NOT_ECT;
+
+    for (int iter = 0; iter < 400 && !ngtcp2_conn_get_handshake_completed(ng_conn_); ++iter) {
+        uint8_t out[1500];
+        ngtcp2_ssize written = ngtcp2_conn_write_pkt(ng_conn_, &path, &pi, out, sizeof(out), (ngtcp2_tstamp)quic_now_ns());
+        std::cout << "[DEBUG] handshake iter=" << iter << " ngtcp2_conn_write_pkt -> " << written << "\n";
+        if (written > 0) {
+            ssize_t s = ::send(udp_fd_, out, written, 0);
+            if (s < 0) {
+                std::cerr << "[DEBUG] sendto failed: " << errno << " (" << strerror(errno) << ")\n";
+            } else {
+                std::cout << "[DEBUG] sent " << s << " bytes to peer\n";
+            }
+            (void)s;
+        }
+
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(udp_fd_, &readfds);
+        struct timeval tv{0, 100000};
+        int rv = select(udp_fd_ + 1, &readfds, NULL, NULL, &tv);
+        if (rv > 0 && FD_ISSET(udp_fd_, &readfds)) {
+            ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
+            std::cout << "[DEBUG] recv returned " << recvd << " bytes\n";
+            if (recvd > 0) {
+                ngtcp2_ssize rc = ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
+                std::cout << "[DEBUG] ngtcp2_conn_read_pkt -> " << rc << "\n";
+                (void)rc;
+            }
+        }
+    }
+
+    if (!ngtcp2_conn_get_handshake_completed(ng_conn_)) {
+        nghttp3_conn_del(ng_h3conn_);
+        ng_h3conn_ = nullptr;
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+        return std::unexpected(QuicError{"QUIC handshake failed", 0});
+    }
+
     connected_ = true;
-    std::cout << "[DEBUG] ngtcp2/nghttp3 session created\n";
+    std::cout << "[DEBUG] ngtcp2/nghttp3 session created and handshake completed\n";
     return {};
 #elif defined(USE_QUIC)
     if (!config_ || !h3_config_) return std::unexpected(QuicError{"quiche not initialized", 0});
@@ -504,11 +669,11 @@ std::expected<void, QuicError> QuicSocket::send_headers(
         nva.push_back(nv);
     }
 
-    // Open a new stream (stream_id = 0 for first request)
-    ng_stream_id_ = 0;
+    // Submit request on stream 0 (library/transport will assign actual stream id)
+    int64_t stream_id = static_cast<int64_t>(ng_stream_id_);
     int rv = nghttp3_conn_submit_request(
         ng_h3conn_,
-        ng_stream_id_,
+        stream_id,
         nva.data(),
         nva.size(),
         nullptr, // no data reader for GET
@@ -516,8 +681,63 @@ std::expected<void, QuicError> QuicSocket::send_headers(
     );
     if (rv != 0) return std::unexpected(QuicError{"nghttp3_conn_submit_request failed", rv});
 
-    // TODO: Drive ngtcp2/nghttp3 event loop to flush packets
-    // For now, just return success
+    // Drive ngtcp2/nghttp3 event loop: flush outgoing packets and process incoming
+    recv_buffer_.resize(65536);
+    // Build path similar to handshake
+    sockaddr_storage local_addr{};
+    socklen_t local_addr_len = sizeof(local_addr);
+    if (getsockname(udp_fd_, reinterpret_cast<sockaddr*>(&local_addr), &local_addr_len) != 0) {
+        return std::unexpected(QuicError{"getsockname failed", errno});
+    }
+    ngtcp2_path path;
+    memset(&path, 0, sizeof(path));
+    ngtcp2_addr_init(&path.local, reinterpret_cast<const ngtcp2_sockaddr*>(&local_addr), (ngtcp2_socklen)local_addr_len);
+    ngtcp2_addr_init(&path.remote, reinterpret_cast<const ngtcp2_sockaddr*>(&peer_addr_), (ngtcp2_socklen)peer_addr_len_);
+
+    ngtcp2_pkt_info pi;
+    memset(&pi, 0, sizeof(pi));
+    pi.ecn = NGTCP2_ECN_NOT_ECT;
+
+    for (int iter = 0; iter < 400; ++iter) {
+        uint8_t out[1500];
+        ngtcp2_ssize written = ngtcp2_conn_write_pkt(ng_conn_, &path, &pi, out, sizeof(out), (ngtcp2_tstamp)quic_now_ns());
+        std::cout << "[DEBUG] send_headers iter=" << iter << " ngtcp2_conn_write_pkt -> " << written << "\n";
+        if (written > 0) {
+            ssize_t s = ::send(udp_fd_, out, written, 0);
+            if (s < 0) {
+                std::cerr << "[DEBUG] sendto failed: " << errno << " (" << strerror(errno) << ")\n";
+            } else {
+                std::cout << "[DEBUG] sent " << s << " bytes to peer\n";
+            }
+            (void)s;
+        }
+
+        // check if headers arrived
+        if (h3_headers_.count(stream_id) > 0) {
+            std::cout << "[DEBUG] headers available for stream " << stream_id << "\n";
+            break;
+        }
+
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(udp_fd_, &readfds);
+        struct timeval tv{0, 100000};
+        int rv = select(udp_fd_ + 1, &readfds, NULL, NULL, &tv);
+        if (rv > 0 && FD_ISSET(udp_fd_, &readfds)) {
+            ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
+            std::cout << "[DEBUG] recv returned " << recvd << " bytes\n";
+            if (recvd > 0) {
+                ngtcp2_ssize rc = ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
+                std::cout << "[DEBUG] ngtcp2_conn_read_pkt -> " << rc << "\n";
+                (void)rc;
+            }
+        }
+    }
+
+    if (h3_headers_.count(stream_id) == 0) {
+        return std::unexpected(QuicError{"Timed out waiting for response headers", 0});
+    }
+
     return {};
 #elif defined(USE_QUIC)
     if (!h3_conn_) return std::unexpected(QuicError{"H3 not initialized", 0});
@@ -567,9 +787,13 @@ std::expected<std::string, QuicError> QuicSocket::recv_headers() {
     // Minimal nghttp3: poll for response headers
     if (!ng_h3conn_ || !ng_conn_) return std::unexpected(QuicError{"nghttp3/ngtcp2 not initialized", 0});
 
-    // TODO: Drive ngtcp2/nghttp3 event loop to receive packets and poll for headers
-    // For now, just return a placeholder
-    return std::string("[nghttp3] Response headers not yet implemented\n");
+    // Return headers captured by nghttp3 callbacks (if any)
+    int64_t sid = static_cast<int64_t>(ng_stream_id_);
+    auto it = h3_headers_.find(sid);
+    if (it == h3_headers_.end()) {
+        return std::unexpected(QuicError{"No headers for stream", 0});
+    }
+    return it->second;
 #elif defined(USE_QUIC)
     recv_buffer_.resize(65536);
     auto res = recv(std::span{recv_buffer_.data(), recv_buffer_.size()});

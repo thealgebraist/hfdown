@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <map>
 
 #ifdef USE_NGTCP2
 #include <ngtcp2/ngtcp2.h>
@@ -56,6 +57,10 @@ public:
     // ngtcp2/nghttp3 session state (public for callbacks)
     ::ngtcp2_conn* ng_conn_ = nullptr;
     ::nghttp3_conn* ng_h3conn_ = nullptr;
+    std::map<int64_t, std::string> h3_headers_;
+    std::map<int64_t, std::string> h3_bodies_;
+    ::nghttp3_qpack_encoder* ng_qpack_encoder_ = nullptr;
+    ::nghttp3_qpack_decoder* ng_qpack_decoder_ = nullptr;
 private:
     uint64_t ng_stream_id_ = 0;
     ::ngtcp2_crypto_conn_ref ng_conn_ref_{};
