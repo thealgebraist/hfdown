@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <format>
 #include <cctype>
+#include <iostream>
 
 namespace hfdown {
 
@@ -75,6 +76,10 @@ std::expected<HttpResponse, HttpErrorInfo> HttpProtocol::parse_response(SocketTy
     
     if (auto te = get_header(response, "transfer-encoding")) {
         response.chunked = header_equals(*te, "chunked");
+    }
+
+    if (auto as = get_header(response, "alt-svc")) {
+        response.alt_svc = *as;
     }
     
     return response;

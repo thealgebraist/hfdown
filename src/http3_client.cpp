@@ -2,6 +2,8 @@
 #include <format>
 #include <algorithm>
 #include <iostream>
+#include <fstream>
+#include <mutex>
 
 namespace hfdown {
 
@@ -9,6 +11,45 @@ Http3Client::Http3Client() {
     // Set default headers for HTTP/3
     headers_["User-Agent"] = "hfdown-http3/1.0";
     headers_["Accept"] = "*/*";
+}
+
+std::expected<void, HttpErrorInfo> Http3Client::download_file(
+    const std::string& url,
+    const std::filesystem::path& output_path,
+    ProgressCallback progress_callback,
+    size_t resume_offset
+) {
+    if (forced_protocol_.empty() || forced_protocol_ == "h3") {
+        // For now, HTTP/3 download uses the memory-based get and writes to file.
+        // In a full implementation, this would be streaming.
+        auto result = get(url);
+        if (result && result->protocol == "h3") {
+            std::ofstream file(output_path, std::ios::binary);
+            if (!file) {
+                return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, "Failed to open output file"});
+            }
+            file.write(result->body.data(), result->body.size());
+            return {};
+        }
+        if (!forced_protocol_.empty() && !result) return std::unexpected(result.error());
+    }
+
+    // Fallback to HTTP/1.1 for large streaming downloads
+    for (const auto& [key, value] : headers_) {
+        http1_fallback_.set_header(key, value);
+    }
+    
+    // Discovery during fallback
+    auto [host, port] = parse_url(url);
+    if (auto it = protocol_cache_.find(host); it != protocol_cache_.end() && it->second == "h3") {
+        // If we know it supports H3, we could force it, but here we just proceed with fallback
+    }
+
+    // Capture response to check for Alt-Svc even during file download
+    // (Actual HttpClient::download_file might need update to return headers, 
+    // but for now we rely on the discovery in 'get' which is usually called first for model info)
+    
+    return http1_fallback_.download_file(url, output_path, progress_callback, resume_offset);
 }
 
 void Http3Client::set_header(const std::string& key, const std::string& value) {
@@ -38,23 +79,48 @@ std::pair<std::string, uint16_t> Http3Client::parse_url(const std::string& url) 
         host = host_part;
     }
     // Debug output
-    std::cout << "[DEBUG] Parsed host: '" << host << "', port: " << port << "\n";
     return {host, port};
 }
 
 std::expected<HttpResponse, HttpErrorInfo> Http3Client::get(const std::string& url) {
-    // Protocol negotiation order: HTTP/3 -> HTTP/2 -> HTTP/1.1
-    if (forced_protocol_.empty() || forced_protocol_ == "h3") {
-        auto result = try_http3(url);
-        if (result || !forced_protocol_.empty()) return result;
-    }
+    auto [host, port] = parse_url(url);
     
-    if (forced_protocol_.empty() || forced_protocol_ == "h2") {
-        auto result = try_http2(url);
-        if (result || !forced_protocol_.empty()) return result;
+    // If protocol is forced, use it immediately
+    if (!forced_protocol_.empty()) {
+        if (forced_protocol_ == "h3") return try_http3(url);
+        if (forced_protocol_ == "h2") return try_http2(url);
+        return try_http1(url);
     }
-    
-    return try_http1(url);
+
+    // Check cache: if we ALREADY know it supports H3, try it
+    {
+        // Simple process-local cache
+        static std::mutex cache_mutex;
+        std::lock_guard lock(cache_mutex);
+        if (auto it = protocol_cache_.find(host); it != protocol_cache_.end()) {
+            if (it->second == "h3") {
+                std::cout << "  [Cache] Host " << host << " known to support HTTP/3, attempting...\n";
+                auto result = try_http3(url);
+                if (result) return result;
+                std::cout << "  [Cache] HTTP/3 attempt failed, falling back and clearing cache\n";
+                protocol_cache_.erase(host);
+            }
+        }
+    }
+
+    // Default: Try HTTP/1.1 first and look for Alt-Svc
+    auto result = try_http1(url);
+    if (result) {
+        if (!result->alt_svc.empty()) {
+            if (result->alt_svc.find("h3") != std::string::npos) {
+                protocol_cache_[host] = "h3";
+            }
+        }
+        if (result->status_code >= 400) {
+            return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", result->status_code), result->status_code});
+        }
+    }
+    return result;
 }
 
 std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http3(const std::string& url) {
@@ -65,10 +131,8 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http3(const std::str
     if (host_start != std::string::npos) host_start += 3; else host_start = 0;
     auto path_start = url.find('/', host_start);
     if (path_start != std::string::npos) path = url.substr(path_start);
-    std::cout << "[DEBUG] Using path: '" << path << "'\n";
 
     QuicSocket socket;
-    std::cout << "[DEBUG] Connecting to host: '" << host << "', port: " << port << "\n";
     auto conn = socket.connect(host, port);
     if (!conn) {
         return std::unexpected(HttpErrorInfo{
@@ -93,23 +157,35 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http3(const std::str
         return std::unexpected(HttpErrorInfo{HttpError::NetworkError, send_result.error().message});
     }
 
-    auto recv_result = socket.recv_headers();
-    if (!recv_result) {
-        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, recv_result.error().message});
+    auto resp_result = socket.get_response();
+    if (!resp_result) {
+        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, resp_result.error().message});
     }
 
-    // Parse response (simplified - production would use QPACK)
     HttpResponse response{};
-    response.status_code = 200; // Placeholder
-    response.body = std::move(*recv_result);
+    response.status_code = resp_result->status_code;
+    response.body = std::move(resp_result->body);
+    response.protocol = "h3";
+    // Copy headers if needed
+    
+    if (response.status_code >= 400) {
+        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", response.status_code), response.status_code});
+    }
 
-    return std::expected<HttpResponse, HttpErrorInfo>(std::move(response));
+    return response;
 }
 
 std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http2(const std::string& url) {
-    // HTTP/2 implementation would go here
-    // For now, fall back to HTTP/1.1
-    return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, "HTTP/2 not yet implemented"});
+    // Copy headers to HTTP client
+    for (const auto& [key, value] : headers_) {
+        http1_fallback_.set_header(key, value);
+    }
+    
+    auto result = http1_fallback_.get_full(url);
+    if (!result) return std::unexpected(result.error());
+    
+    // HttpClient (via curl) will negotiate H2 if supported
+    return result;
 }
 
 std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http1(const std::string& url) {
@@ -118,15 +194,10 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http1(const std::str
         http1_fallback_.set_header(key, value);
     }
     
-    auto result = http1_fallback_.get(url);
+    auto result = http1_fallback_.get_full(url);
     if (!result) return std::unexpected(result.error());
     
-    // Convert string response to HttpResponse with body
-    HttpResponse response{};
-    response.status_code = 200;
-    response.body = std::move(*result);
-    
-    return std::expected<HttpResponse, HttpErrorInfo>(std::move(response));
+    return result;
 }
 
 std::expected<HttpResponse, HttpErrorInfo> Http3Client::get_with_range(

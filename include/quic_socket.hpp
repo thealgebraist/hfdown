@@ -23,6 +23,12 @@ struct QuicError {
     int code;
 };
 
+struct QuicResponse {
+    int status_code;
+    std::string body;
+    std::map<std::string, std::string> headers;
+};
+
 // HTTP/3 over QUIC socket wrapper
 class QuicSocket {
 public:
@@ -39,6 +45,7 @@ public:
     // HTTP/3 specific
     std::expected<void, QuicError> send_headers(const std::vector<std::pair<std::string, std::string>>& headers);
     std::expected<std::string, QuicError> recv_headers();
+    std::expected<QuicResponse, QuicError> get_response();
     
 private:
     int udp_fd_;
@@ -59,6 +66,7 @@ public:
     ::nghttp3_conn* ng_h3conn_ = nullptr;
     std::map<int64_t, std::string> h3_headers_;
     std::map<int64_t, std::string> h3_bodies_;
+    std::map<int64_t, bool> h3_stream_finished_;
     ::nghttp3_qpack_encoder* ng_qpack_encoder_ = nullptr;
     ::nghttp3_qpack_decoder* ng_qpack_decoder_ = nullptr;
 private:
@@ -76,6 +84,7 @@ private:
     
     std::expected<void, QuicError> init_quic();
     std::expected<void, QuicError> handshake();
+    void drive();
 };
 
 } // namespace hfdown

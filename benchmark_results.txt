@@ -1,11 +1,1 @@
 Test Name|Buffer(KB)|FileBuffer(KB)|Progress(ms)|HTTP/2|TCP_NODELAY|User(s)|System(s)|Total(s)|Memory(MB)
-Baseline (HTTP/1.1, small buffers)|16|64|500|false|false|5.32|5.32|10.64|13.79
-HTTP/2 enabled|16|64|500|true|false|3.74|3.74|7.48|13.98
-Large CURL buffer (512KB)|512|64|500|true|false|4.18|4.18|8.36|13.84
-Large file buffer (1MB)|512|1024|500|true|false|4.31|4.31|8.62|13.89
-Huge CURL buffer (1MB)|1024|1024|500|true|false|4.72|4.72|9.44|13.96
-Massive CURL buffer (2MB)|2048|2048|500|true|false|4.24|4.24|8.48|13.85
-Slow progress (1000ms)|512|1024|1000|true|false|3.96|3.96|7.92|13.92
-TCP_NODELAY enabled|512|1024|500|true|true|3.80|3.80|7.60|13.92
-Current default config|512|1024|250|true|true|3.76|3.76|7.52|13.75
-Ultra optimized (2MB buffers)|2048|2048|1000|true|true|4.34|4.34|8.68|13.89

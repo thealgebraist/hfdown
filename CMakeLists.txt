@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Find required packages
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(CURL REQUIRED)
 
 # Optional QUIC (quiche) support
 option(USE_QUIC "Enable QUIC (quiche) support" OFF)
@@ -155,9 +156,6 @@ add_executable(hfdown
     src/secret_scanner.cpp
     src/quic_socket.cpp
     src/http3_client.cpp
-    src/socket_wrapper.cpp
-    src/tls_socket.cpp
-    src/http_protocol.cpp
     src/rsync_client.cpp
 )
 
@@ -170,6 +168,7 @@ target_link_libraries(hfdown PRIVATE
     Threads::Threads
     OpenSSL::SSL
     OpenSSL::Crypto
+    CURL::libcurl
 )
 
 # Apply ngtcp2/nghttp3 include/libs to the hfdown target if configured
@@ -194,4 +193,43 @@ if(MSVC)
     target_compile_options(hfdown PRIVATE /W4)
 else()
     target_compile_options(hfdown PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# Test executables
+if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
+    add_executable(test_http3 test_http3.cpp
+        src/http3_client.cpp
+        src/quic_socket.cpp
+        src/http_client.cpp
+    )
+    target_include_directories(test_http3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(test_http3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl)
+    target_compile_definitions(test_http3 PRIVATE USE_NGTCP2)
+
+    add_executable(test_http3_range test_http3_range.cpp
+        src/http3_client.cpp
+        src/quic_socket.cpp
+        src/http_client.cpp
+    )
+    target_include_directories(test_http3_range PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(test_http3_range PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl)
+    target_compile_definitions(test_http3_range PRIVATE USE_NGTCP2)
+
+    add_executable(benchmark_h3_h2 benchmark_h3_h2.cpp
+        src/http3_client.cpp
+        src/quic_socket.cpp
+        src/http_client.cpp
+    )
+    target_include_directories(benchmark_h3_h2 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(benchmark_h3_h2 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl)
+    target_compile_definitions(benchmark_h3_h2 PRIVATE USE_NGTCP2)
+
+    add_executable(test_providers_h3 test_providers_h3.cpp
+        src/http3_client.cpp
+        src/quic_socket.cpp
+        src/http_client.cpp
+    )
+    target_include_directories(test_providers_h3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(test_providers_h3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl)
+    target_compile_definitions(test_providers_h3 PRIVATE USE_NGTCP2)
 endif()

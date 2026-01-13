@@ -1,44 +1,72 @@
 #include "http_client.hpp"
-#include "socket_wrapper.hpp"
-#include "tls_socket.hpp"
 #include "http_protocol.hpp"
+#include <curl/curl.h>
 #include <fstream>
 #include <chrono>
 #include <format>
-#include <algorithm>
-#include <variant>
+#include <iostream>
 
 namespace hfdown {
 
-struct UrlParts {
-    std::string protocol;
-    std::string host;
-    uint16_t port = 80;
-    std::string path;
+struct ProgressData {
+    ProgressCallback callback;
+    std::chrono::steady_clock::time_point last_time;
+    size_t last_downloaded = 0;
 };
 
-UrlParts parse_url(const std::string& url) {
-    UrlParts parts;
-    auto url_view = url;
+static size_t write_string_callback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t realsize = size * nmemb;
+    auto* body = static_cast<std::string*>(userp);
+    body->append(static_cast<char*>(contents), realsize);
+    return realsize;
+}
+
+static size_t write_file_callback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t realsize = size * nmemb;
+    auto* file = static_cast<std::ofstream*>(userp);
+    file->write(static_cast<char*>(contents), realsize);
+    return realsize;
+}
+
+static size_t header_callback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t realsize = size * nmemb;
+    auto* response = static_cast<HttpResponse*>(userp);
+    std::string line(static_cast<char*>(contents), realsize);
     
-    if (auto proto_end = url.find("://"); proto_end != std::string::npos) {
-        parts.protocol = url.substr(0, proto_end);
-        url_view = url.substr(proto_end + 3);
-        parts.port = (parts.protocol == "https") ? 443 : 80;
+    if (auto colon = line.find(':'); colon != std::string::npos) {
+        auto key = line.substr(0, colon);
+        auto value = line.substr(colon + 1);
+        value.erase(0, value.find_first_not_of(" 	"));
+        value.erase(value.find_last_not_of(" \t\r\n") + 1);
+        response->headers[key] = value;
+        
+        if (key == "Alt-Svc" || key == "alt-svc") {
+            response->alt_svc = value;
+        }
     }
+    return realsize;
+}
+
+static int progress_callback_func(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+    (void)ultotal; (void)ulnow;
+    auto* data = static_cast<ProgressData*>(clientp);
+    if (!data->callback) return 0;
     
-    auto path_start = url_view.find('/');
-    auto host_part = (path_start != std::string::npos) ? url_view.substr(0, path_start) : url_view;
-    parts.path = (path_start != std::string::npos) ? url_view.substr(path_start) : "/";
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - data->last_time).count();
     
-    if (auto port_pos = host_part.find(':'); port_pos != std::string::npos) {
-        parts.host = host_part.substr(0, port_pos);
-        parts.port = std::stoi(host_part.substr(port_pos + 1));
-    } else {
-        parts.host = host_part;
+    if (elapsed >= 250 || dlnow == dltotal) {
+        DownloadProgress progress;
+        progress.downloaded_bytes = static_cast<size_t>(dlnow);
+        progress.total_bytes = static_cast<size_t>(dltotal);
+        if (elapsed > 0) {
+            progress.speed_mbps = ((dlnow - data->last_downloaded) / (1024.0 * 1024.0)) / (elapsed / 1000.0);
+        }
+        data->callback(progress);
+        data->last_time = now;
+        data->last_downloaded = dlnow;
     }
-    
-    return parts;
+    return 0;
 }
 
 class HttpClient::Impl {
@@ -46,6 +74,14 @@ public:
     std::map<std::string, std::string> headers;
     long timeout = 300;
     HttpConfig config;
+    
+    Impl() {
+        curl_global_init(CURL_GLOBAL_ALL);
+    }
+    
+    ~Impl() {
+        curl_global_cleanup();
+    }
 };
 
 HttpClient::HttpClient() : pImpl_(std::make_unique<Impl>()) {}
@@ -65,160 +101,63 @@ void HttpClient::set_config(const HttpConfig& config) {
     pImpl_->config = config;
 }
 
-template<typename SocketType>
-std::expected<std::string, HttpErrorInfo> get_impl(SocketType& socket, const UrlParts& parts, 
-    const std::map<std::string, std::string>& headers) {
-    HttpRequest request{.method = "GET", .path = parts.path, .host = parts.host, .headers = headers};
-    auto request_str = HttpProtocol::build_request(request);
+std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(const std::string& url) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to init CURL"});
     
-    if (auto write_res = socket.write(std::span{request_str.data(), request_str.size()}); !write_res) {
-        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to send request"});
-    }
-    
-    auto response = HttpProtocol::parse_response(socket);
-    if (!response) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, response.error().message});
-    
-    if (response->status_code >= 300 && response->status_code < 400) {
-        return HttpProtocol::get_header(*response, "Location")
-            .transform([](const auto& loc) { return std::string(loc); })
-            .or_else([](){ return std::optional<std::string>("Redirect without Location"); })
-            .value();
-    }
-    
-    if (response->status_code >= 400) {
-        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, 
-            std::format("HTTP {}", response->status_code), response->status_code});
-    }
-    
+    HttpResponse response;
     std::string body;
-    std::array<char, 65536> buffer{};
-    
-    if (response->chunked) {
-        while (true) {
-            auto chunk = HttpProtocol::read_chunk(socket, std::span{buffer});
-            if (!chunk || *chunk == 0) break;
-            body.append(buffer.data(), *chunk);
-        }
-    } else {
-        while (true) {
-            auto bytes = socket.read(std::span{buffer});
-            if (!bytes || *bytes == 0) break;
-            body.append(buffer.data(), *bytes);
-        }
+    struct curl_slist* chunk = nullptr;
+    for (const auto& [k, v] : pImpl_->headers) {
+        chunk = curl_slist_append(chunk, std::format("{}: {}", k, v).c_str());
     }
-    return body;
+    
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, pImpl_->timeout);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response);
+    
+    if (pImpl_->config.enable_http2) {
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+    }
+    
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, curl_easy_strerror(res)});
+    }
+    
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    response.status_code = static_cast<int>(http_code);
+    response.body = std::move(body);
+    response.protocol = "http/1.1"; // Default
+    
+    long http_version = 0;
+    curl_easy_getinfo(curl, CURLINFO_HTTP_VERSION, &http_version);
+    if (http_version == CURL_HTTP_VERSION_2_0) response.protocol = "h2";
+    else if (http_version == CURL_HTTP_VERSION_3) response.protocol = "h3";
+    else if (http_version == CURL_HTTP_VERSION_1_1) response.protocol = "http/1.1";
+    else response.protocol = std::format("http/{}", http_version);
+    
+    curl_slist_free_all(chunk);
+    curl_easy_cleanup(curl);
+    
+    return response;
 }
 
 std::expected<std::string, HttpErrorInfo> HttpClient::get(const std::string& url) {
-    auto parts = parse_url(url);
-    
-    if (parts.protocol == "https") {
-        TlsSocket socket;
-        socket.set_timeout(pImpl_->timeout);
-        if (auto conn = socket.connect(parts.host, parts.port); !conn) {
-            return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
-        }
-        auto result = get_impl(socket, parts, pImpl_->headers);
-        if (result && result->starts_with("http")) {
-            socket.close();
-            return get(*result);
-        }
-        return result;
-    } else {
-        Socket socket;
-        socket.set_timeout(pImpl_->timeout);
-        if (auto conn = socket.connect(parts.host, parts.port); !conn) {
-            return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
-        }
-        auto result = get_impl(socket, parts, pImpl_->headers);
-        if (result && result->starts_with("http")) {
-            socket.close();
-            return get(*result);
-        }
-        return result;
+    auto res = get_full(url);
+    if (!res) return std::unexpected(res.error());
+    if (res->status_code >= 400) {
+        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", res->status_code), res->status_code});
     }
-}
-
-template<typename SocketType, typename RedirectHandler>
-std::expected<void, HttpErrorInfo> download_impl(SocketType& socket, const UrlParts& parts,
-    const std::filesystem::path& output_path, const std::map<std::string, std::string>& headers,
-    ProgressCallback progress_callback, const HttpConfig& config, RedirectHandler&& redirect, size_t resume_offset) {
-    auto temp_path = std::filesystem::path(output_path).concat(".incomplete");
-    std::ios::openmode mode = std::ios::binary;
-    if (resume_offset > 0 && std::filesystem::exists(temp_path)) {
-        mode |= std::ios::app;
-    }
-    std::ofstream file(temp_path, mode);
-    std::vector<char> file_buffer(config.file_buffer_size);
-    file.rdbuf()->pubsetbuf(file_buffer.data(), config.file_buffer_size);
-    
-    auto request_headers = headers;
-    if (resume_offset > 0 && config.enable_resume) {
-        request_headers["Range"] = std::format("bytes={}-", resume_offset);
-    }
-    
-    HttpRequest request{.method = "GET", .path = parts.path, .host = parts.host, .headers = request_headers};
-    auto request_str = HttpProtocol::build_request(request);
-    if (auto write_res = socket.write(std::span{request_str.data(), request_str.size()}); !write_res) {
-        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to send request"});
-    }
-    
-    auto response = HttpProtocol::parse_response(socket);
-    if (!response) { std::filesystem::remove(temp_path); return std::unexpected(HttpErrorInfo{HttpError::NetworkError, response.error().message}); }
-    
-    if (response->status_code >= 300 && response->status_code < 400) {
-        if (auto loc = HttpProtocol::get_header(*response, "Location")) {
-            std::filesystem::remove(temp_path);
-            socket.close();
-            auto redirect_url = loc->starts_with("http") ? *loc 
-                : std::format("{}://{}{}", parts.protocol, parts.host, *loc);
-            return redirect(redirect_url);
-        }
-    }
-    
-    if (response->status_code >= 400) { std::filesystem::remove(temp_path); return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", response->status_code), response->status_code}); }
-    
-    auto last_time = std::chrono::steady_clock::now();
-    size_t downloaded = resume_offset, last_downloaded = resume_offset;
-    std::vector<char> buffer(config.buffer_size);
-    
-    auto update_progress = [&]() {
-        if (!progress_callback) return;
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_time).count();
-        if (elapsed < config.progress_update_ms) return;
-        DownloadProgress progress{.downloaded_bytes = downloaded, .total_bytes = response->content_length};
-        if (elapsed > 0) progress.speed_mbps = ((downloaded - last_downloaded) / (1024.0 * 1024.0)) / (elapsed / 1000.0);
-        progress_callback(progress);
-        last_downloaded = downloaded;
-        last_time = now;
-    };
-    
-    if (response->chunked) {
-        while (true) {
-            auto chunk = HttpProtocol::read_chunk(socket, std::span{buffer});
-            if (!chunk || *chunk == 0) break;
-            file.write(buffer.data(), *chunk);
-            downloaded += *chunk;
-            update_progress();
-        }
-    } else {
-        while (true) {
-            auto bytes = socket.read(std::span{buffer});
-            if (!bytes || *bytes == 0) break;
-            file.write(buffer.data(), *bytes);
-            downloaded += *bytes;
-            update_progress();
-        }
-    }
-    
-    file.close();
-    
-    file.close();
-    std::error_code ec;
-    std::filesystem::rename(temp_path, output_path, ec);
-    if (ec) { std::filesystem::remove(temp_path); return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, std::format("Failed to move file: {}", ec.message())}); }
-    return {};
+    return std::move(res->body);
 }
 
 std::expected<void, HttpErrorInfo> HttpClient::download_file(
@@ -227,41 +166,64 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
     ProgressCallback progress_callback,
     size_t resume_offset
 ) {
-    auto parts = parse_url(url);
+    CURL* curl = curl_easy_init();
+    if (!curl) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to init CURL"});
     
     if (output_path.has_parent_path()) {
-        std::error_code ec;
-        std::filesystem::create_directories(output_path.parent_path(), ec);
-        if (ec) return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, std::format("Failed to create directories: {}", ec.message())});
+        std::filesystem::create_directories(output_path.parent_path());
     }
     
-    // Check for incomplete file and resume if enabled
-    auto temp_path = std::filesystem::path(output_path).concat(".incomplete");
-    if (pImpl_->config.enable_resume && std::filesystem::exists(temp_path) && resume_offset == 0) {
-        resume_offset = std::filesystem::file_size(temp_path);
+    std::ofstream file(output_path, std::ios::binary | (resume_offset > 0 ? std::ios::app : std::ios::trunc));
+    if (!file) {
+        curl_easy_cleanup(curl);
+        return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, "Failed to open output file"});
     }
     
-    if (parts.protocol == "https") {
-        TlsSocket socket;
-        socket.set_timeout(pImpl_->timeout);
-        if (auto conn = socket.connect(parts.host, parts.port); !conn) {
-            return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
-        }
-        auto redirect = [this, &output_path, &progress_callback, resume_offset](const std::string& url) {
-            return this->download_file(url, output_path, progress_callback, resume_offset);
-        };
-        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config, redirect, resume_offset);
-    } else {
-        Socket socket;
-        socket.set_timeout(pImpl_->timeout);
-        if (auto conn = socket.connect(parts.host, parts.port); !conn) {
-            return std::unexpected(HttpErrorInfo{HttpError::NetworkError, conn.error().message});
-        }
-        auto redirect = [this, &output_path, &progress_callback, resume_offset](const std::string& url) {
-            return this->download_file(url, output_path, progress_callback, resume_offset);
-        };
-        return download_impl(socket, parts, output_path, pImpl_->headers, progress_callback, pImpl_->config, redirect, resume_offset);
+    struct curl_slist* chunk = nullptr;
+    for (const auto& [k, v] : pImpl_->headers) {
+        chunk = curl_slist_append(chunk, std::format("{}: {}", k, v).c_str());
     }
+    
+    ProgressData pdata{progress_callback, std::chrono::steady_clock::now(), resume_offset};
+    
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, pImpl_->timeout);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &file);
+    if (progress_callback) {
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback_func);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &pdata);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    }
+    
+    if (resume_offset > 0) {
+        curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, static_cast<curl_off_t>(resume_offset));
+    }
+    
+    if (pImpl_->config.enable_http2) {
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+    }
+    
+    CURLcode res = curl_easy_perform(curl);
+    file.close();
+    curl_slist_free_all(chunk);
+    
+    if (res != CURLE_OK) {
+        curl_easy_cleanup(curl);
+        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, curl_easy_strerror(res)});
+    }
+    
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (http_code >= 400) {
+        curl_easy_cleanup(curl);
+        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", http_code), static_cast<int>(http_code)});
+    }
+    
+    curl_easy_cleanup(curl);
+    return {};
 }
 
 } // namespace hfdown

@@ -48,7 +48,7 @@ std::expected<ModelInfo, HFErrorInfo> HuggingFaceClient::get_model_info(
     }
     
     try {
-        auto json_data = json::parse(*response);
+        auto json_data = json::parse(response->body);
         
         ModelInfo info;
         info.model_id = model_id;
@@ -184,7 +184,7 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
             }
             
             // Create a new HTTP client for each thread
-            HttpClient thread_http_client;
+            Http3Client thread_http_client;
             if (!token_.empty()) {
                 thread_http_client.set_header("Authorization", 
                     std::format("Bearer {}", token_));

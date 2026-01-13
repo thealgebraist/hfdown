@@ -79,7 +79,7 @@ std::expected<DatasetInfo, KaggleErrorInfo> KaggleClient::get_dataset_info(
     }
     
     try {
-        auto json_data = json::parse(*response);
+        auto json_data = json::parse(response->body);
         
         DatasetInfo info;
         info.owner = owner;

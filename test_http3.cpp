@@ -19,33 +19,26 @@ void test_parse_url() {
     assert(port3 == 443);
 }
 
-void test_http3_get() {
-    auto client = std::make_shared<Http3Client>();
-    struct ResultBox { std::optional<std::expected<HttpResponse, HttpErrorInfo>> res; std::mutex m; std::condition_variable cv; };
-    auto box = std::make_shared<ResultBox>();
+void test_http3_discovery() {
+    Http3Client client;
+    std::cout << "Request 1 (Discovery): https://www.google.com/\n";
+    auto r1 = client.get("https://www.google.com/");
+    assert(r1 && r1->protocol == "http/1.1");
+    assert(!r1->alt_svc.empty());
+    std::cout << "✓ Discovered: " << r1->alt_svc << "\n";
 
-    std::thread([client, box]() {
-        auto r = client->get("https://cloudflare-quic.com/");
-        {
-            std::lock_guard lk(box->m);
-            box->res = std::move(r);
-        }
-        box->cv.notify_one();
-    }).detach();
-
-    std::unique_lock lk(box->m);
-    if (box->cv.wait_for(lk, std::chrono::seconds(5), [&box]{ return box->res.has_value(); })) {
-        auto result = *box->res;
-        assert(result || result.error().error == HttpError::ConnectionFailed);
+    std::cout << "Request 2 (Cached H3): https://www.google.com/\n";
+    auto r2 = client.get("https://www.google.com/");
+    if (r2 && r2->protocol == "h3") {
+        std::cout << "✓ Successfully switched to h3 from cache!\n";
     } else {
-        std::cout << "[SKIP] test_http3_get timed out (no QUIC or network).\n";
+        std::cout << "✗ Failed to use H3 from cache (got " << (r2 ? r2->protocol : "error") << ")\n";
     }
 }
 
 int main() {
     test_parse_url();
     std::cout << "✓ test_parse_url passed\n";
-    test_http3_get();
-    std::cout << "✓ test_http3_get passed (if QUIC available)\n";
+    test_http3_discovery();
     return 0;
 }

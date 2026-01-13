@@ -69,6 +69,9 @@ public:
     
     // GET request returning response body as string
     std::expected<std::string, HttpErrorInfo> get(const std::string& url);
+
+    // GET request returning full response object
+    std::expected<struct HttpResponse, HttpErrorInfo> get_full(const std::string& url);
     
     // Set custom headers
     void set_header(const std::string& key, const std::string& value);

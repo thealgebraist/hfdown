@@ -22,6 +22,13 @@ public:
         size_t start, 
         size_t end
     );
+
+    std::expected<void, HttpErrorInfo> download_file(
+        const std::string& url,
+        const std::filesystem::path& output_path,
+        ProgressCallback progress_callback = nullptr,
+        size_t resume_offset = 0
+    );
     
     void set_header(const std::string& key, const std::string& value);
     
@@ -40,6 +47,9 @@ private:
     size_t max_concurrent_streams_ = 100;
     
     HttpClient http1_fallback_;
+    
+    // Persistent protocol discovery cache (host -> protocol)
+    inline static std::map<std::string, std::string> protocol_cache_;
     
     std::expected<HttpResponse, HttpErrorInfo> try_http3(const std::string& url);
     std::expected<HttpResponse, HttpErrorInfo> try_http2(const std::string& url);

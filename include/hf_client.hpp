@@ -1,6 +1,6 @@
 #pragma once
 
-#include "http_client.hpp"
+#include "http3_client.hpp"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -56,9 +56,13 @@ public:
         size_t parallel_downloads = 4
     );
 
+    void set_protocol(const std::string& protocol) {
+        http_client_.set_protocol(protocol);
+    }
+
 private:
     std::string token_;
-    HttpClient http_client_;
+    Http3Client http_client_;
     
     std::string get_api_url(const std::string& model_id) const;
     std::string get_file_url(const std::string& model_id, const std::string& filename) const;
