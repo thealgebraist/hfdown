@@ -43,6 +43,11 @@ private:
     void* h3_conn_ = nullptr;
     uint64_t h3_stream_id_ = 0;
 #endif
+    // NGTCP2 alternative
+#ifdef USE_NGTCP2
+    void* ngtcp2_session_ = nullptr;
+    void* nghttp3_conn_ = nullptr;
+#endif
     std::vector<char> recv_buffer_;
     struct sockaddr_storage peer_addr_;
     socklen_t peer_addr_len_ = 0;

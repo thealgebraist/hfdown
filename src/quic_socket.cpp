@@ -5,12 +5,21 @@
 #include <cstring>
 #include <format>
 #include <iostream>
+#include <cerrno>
 
 #ifdef USE_QUIC
 #include <quiche.h>
 #include <openssl/rand.h>
 #include <sys/select.h>
 #endif
+
+#ifdef USE_NGTCP2
+#include <ngtcp2/ngtcp2.h>
+#include <nghttp3/nghttp3.h>
+#include <openssl/rand.h>
+#include <sys/select.h>
+#endif
+
 
 namespace hfdown {
 
@@ -72,12 +81,20 @@ std::expected<void, QuicError> QuicSocket::connect(const std::string& host, uint
 }
 
 std::expected<void, QuicError> QuicSocket::init_quic() {
-    // Initialize quiche if available
-#ifdef USE_QUIC
-    std::cout << "[DEBUG] init_quic: quiche available\n";
+    // Initialize QUIC backend: prefer ngtcp2 -> quiche -> fallback
+#if defined(USE_NGTCP2)
+    std::cout << "[DEBUG] init_quic: ngtcp2 enabled (skeleton init)\n";
+    // Minimal skeleton: real ngtcp2 integration is complex; mark as configured
+    ngtcp2_session_ = reinterpret_cast<void*>(0x1);
+    std::cout << "[DEBUG] ngtcp2_session_ -> " << ngtcp2_session_ << "\n";
+    return {};
+#elif defined(USE_QUIC)
+    std::cout << "[DEBUG] init_quic: quiche available - creating config\n";
     config_ = (void*)quiche_config_new(QUICHE_PROTOCOL_VERSION);
+    std::cout << "[DEBUG] quiche_config_new -> " << config_ << "\n";
     if (!config_) return std::unexpected(QuicError{"quiche_config_new failed", 0});
 
+    std::cout << "[DEBUG] setting quiche config params\n";
     quiche_config_set_application_protos((quiche_config*)config_, (uint8_t*)"\x05h3-29", 6);
     quiche_config_set_max_idle_timeout((quiche_config*)config_, 5000);
     quiche_config_set_max_recv_udp_payload_size((quiche_config*)config_, 1350);
@@ -85,20 +102,27 @@ std::expected<void, QuicError> QuicSocket::init_quic() {
     quiche_config_set_initial_max_data((quiche_config*)config_, 10 * 1024 * 1024);
     quiche_config_set_initial_max_streams_bidi((quiche_config*)config_, 100);
     quiche_config_set_disable_active_migration((quiche_config*)config_, 1);
-
+    std::cout << "[DEBUG] creating H3 config\n";
     h3_config_ = (void*)quiche_h3_config_new();
+    std::cout << "[DEBUG] quiche_h3_config_new -> " << h3_config_ << "\n";
     if (!h3_config_) return std::unexpected(QuicError{"quiche_h3_config_new failed", 0});
 
+    std::cout << "[DEBUG] init_quic: success\n";
     return {};
 #else
-    // Placeholder for QUIC initialization when quiche unavailable
+    // Placeholder when no QUIC backend is enabled
     return {};
 #endif
 }
 
 std::expected<void, QuicError> QuicSocket::handshake() {
-    // Perform handshake using quiche if available
-#ifdef USE_QUIC
+    // Handshake depending on chosen backend
+#if defined(USE_NGTCP2)
+    std::cout << "[DEBUG] handshake: ngtcp2 skeleton - marking connected\n";
+    if (!ngtcp2_session_) return std::unexpected(QuicError{"ngtcp2 not initialized", 0});
+    connected_ = true;
+    return {};
+#elif defined(USE_QUIC)
     if (!config_ || !h3_config_) return std::unexpected(QuicError{"quiche not initialized", 0});
 
     // Create a random source connection id
@@ -146,7 +170,6 @@ std::expected<void, QuicError> QuicSocket::handshake() {
     connected_ = true;
     return {};
 #else
-    // Placeholder when no quiche
     return {};
 #endif
 }
@@ -156,7 +179,12 @@ std::expected<size_t, QuicError> QuicSocket::send(std::span<const char> data) {
         return std::unexpected(QuicError{"Not connected", 0});
     }
     // If quiche is enabled, use quiche_conn_stream_send for H3 streams
-#ifdef USE_QUIC
+#if defined(USE_NGTCP2)
+    // Minimal ngtcp2 skeleton: send via UDP as a placeholder
+    ssize_t sent = ::send(udp_fd_, data.data(), data.size(), 0);
+    if (sent < 0) return std::unexpected(QuicError{"Send failed", errno});
+    return static_cast<size_t>(sent);
+#elif defined(USE_QUIC)
     if (h3_conn_) {
         uint64_t out_err = 0;
         ssize_t sent = quiche_conn_stream_send((quiche_conn*)conn_, h3_stream_id_, reinterpret_cast<const uint8_t*>(data.data()), data.size(), false, &out_err);
@@ -185,7 +213,22 @@ std::expected<size_t, QuicError> QuicSocket::recv(std::span<char> buffer) {
         return std::unexpected(QuicError{"Not connected", 0});
     }
     // If quiche is enabled, read using quiche APIs
-#ifdef USE_QUIC
+#if defined(USE_NGTCP2)
+    // Minimal ngtcp2 skeleton: read from UDP socket with timeout
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(udp_fd_, &readfds);
+    struct timeval tv{2, 0}; // 2s timeout
+    int rv = select(udp_fd_ + 1, &readfds, NULL, NULL, &tv);
+    if (rv == 0) return std::unexpected(QuicError{"Recv timeout", ETIMEDOUT});
+    if (rv < 0) return std::unexpected(QuicError{"select failed", errno});
+    if (FD_ISSET(udp_fd_, &readfds)) {
+        ssize_t received = ::recv(udp_fd_, buffer.data(), buffer.size(), 0);
+        if (received < 0) return std::unexpected(QuicError{"Recv failed", errno});
+        return static_cast<size_t>(received);
+    }
+    return std::unexpected(QuicError{"No data", 0});
+#elif defined(USE_QUIC)
     // Drive quiche: read network packets and poll H3 events
     fd_set readfds;
     FD_ZERO(&readfds);
@@ -230,7 +273,14 @@ std::expected<size_t, QuicError> QuicSocket::recv(std::span<char> buffer) {
     quiche_h3_event_free(ev);
     return std::unexpected(QuicError{"Unhandled H3 event", 0});
 #else
-    // UDP fallback (demo only)
+    // UDP fallback (demo only) with timeout
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(udp_fd_, &readfds);
+    struct timeval tv{2, 0}; // 2s timeout
+    int rv = select(udp_fd_ + 1, &readfds, NULL, NULL, &tv);
+    if (rv == 0) return std::unexpected(QuicError{"Recv timeout", ETIMEDOUT});
+    if (rv < 0) return std::unexpected(QuicError{"select failed", errno});
     ssize_t received = ::recv(udp_fd_, buffer.data(), buffer.size(), 0);
     if (received < 0) {
         return std::unexpected(QuicError{"Recv failed", errno});
@@ -243,7 +293,17 @@ std::expected<void, QuicError> QuicSocket::send_headers(
     const std::vector<std::pair<std::string, std::string>>& headers
 ) {
     // Use quiche H3 API when available
-#ifdef USE_QUIC
+#if defined(USE_NGTCP2)
+    // ngtcp2 skeleton: fallback to sending headers as plain text over UDP
+    std::string encoded_headers;
+    for (const auto& [key, value] : headers) {
+        encoded_headers += std::format("{}: {}\r\n", key, value);
+    }
+    encoded_headers += "\r\n";
+    auto result = send(std::span{encoded_headers.data(), encoded_headers.size()});
+    if (!result) return std::unexpected(result.error());
+    return {};
+#elif defined(USE_QUIC)
     if (!h3_conn_) return std::unexpected(QuicError{"H3 not initialized", 0});
 
     std::vector<quiche_h3_header> h3h;
@@ -287,7 +347,12 @@ std::expected<void, QuicError> QuicSocket::send_headers(
 
 std::expected<std::string, QuicError> QuicSocket::recv_headers() {
     // Use quiche H3 API when available
-#ifdef USE_QUIC
+#if defined(USE_NGTCP2)
+    recv_buffer_.resize(65536);
+    auto res = recv(std::span{recv_buffer_.data(), recv_buffer_.size()});
+    if (!res) return std::unexpected(res.error());
+    return std::string(recv_buffer_.data(), *res);
+#elif defined(USE_QUIC)
     recv_buffer_.resize(65536);
     auto res = recv(std::span{recv_buffer_.data(), recv_buffer_.size()});
     if (!res) return std::unexpected(res.error());

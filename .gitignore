@@ -19,3 +19,4 @@ test_https
 .vscode/
 .idea/
 cmake-build-*/
+build-asan/

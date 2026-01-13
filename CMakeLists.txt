@@ -29,6 +29,65 @@ if(USE_QUIC)
         message(FATAL_ERROR "quiche lib not found: ${QUICHE_LIB}")
     endif()
 endif()
+
+# Optional NGTCP2 support
+option(USE_NGTCP2 "Enable QUIC (ngtcp2 + nghttp3) support" OFF)
+if(USE_NGTCP2)
+    find_package(PkgConfig REQUIRED)
+    # Homebrew pkg-config names are libngtcp2 / libngtcp2_crypto_ossl / libnghttp3
+    pkg_check_modules(NGTCP2 QUIET libngtcp2)
+    pkg_check_modules(NGHTTP3 QUIET libnghttp3)
+    pkg_check_modules(NGTCP2_CRYPTO QUIET libngtcp2_crypto_ossl)
+
+    # If pkg-config didn't find them, try Homebrew Cellar defaults
+    if(NOT NGTCP2_FOUND)
+        if(NOT DEFINED NGTCP2_ROOT)
+            set(NGTCP2_ROOT "/opt/homebrew/Cellar/libngtcp2/1.19.0")
+        endif()
+        set(NGTCP2_INCLUDE_DIRS ${NGTCP2_ROOT}/include)
+        if(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2.a)
+            set(NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2.a)
+        elseif(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2.dylib)
+            set(NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2.dylib)
+        endif()
+    endif()
+
+    if(NOT NGHTTP3_FOUND)
+        if(NOT DEFINED NGHTTP3_ROOT)
+            set(NGHTTP3_ROOT "/opt/homebrew/Cellar/libnghttp3/1.14.0")
+        endif()
+        set(NGHTTP3_INCLUDE_DIRS ${NGHTTP3_ROOT}/include)
+        if(EXISTS ${NGHTTP3_ROOT}/lib/libnghttp3.a)
+            set(NGHTTP3_LIBRARIES ${NGHTTP3_ROOT}/lib/libnghttp3.a)
+        elseif(EXISTS ${NGHTTP3_ROOT}/lib/libnghttp3.dylib)
+            set(NGHTTP3_LIBRARIES ${NGHTTP3_ROOT}/lib/libnghttp3.dylib)
+        endif()
+    endif()
+
+    # Prefer the crypto helper pkg-config if present (provides openssl glue)
+    if(NGTCP2_CRYPTO_FOUND)
+        set(NGTCP2_INCLUDE_DIRS ${NGTCP2_CRYPTO_INCLUDE_DIRS})
+        set(NGTCP2_LIBRARIES ${NGTCP2_CRYPTO_LIBRARIES})
+        list(APPEND NGTCP2_LIBRARIES ${NGTCP2_LIBRARIES})
+        message(STATUS "Using libngtcp2_crypto_ossl for TLS helper")
+    else()
+        # Try to find a prebuilt helper in the Cellar
+        if(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.a)
+            list(APPEND NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.a)
+        elseif(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.dylib)
+            list(APPEND NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.dylib)
+        endif()
+    endif()
+
+    if( (NOT NGTCP2_FOUND AND (NOT DEFINED NGTCP2_LIBRARIES OR NGTCP2_LIBRARIES STREQUAL "")) OR (NOT NGHTTP3_FOUND AND (NOT DEFINED NGHTTP3_LIBRARIES OR NGHTTP3_LIBRARIES STREQUAL "")) )
+        message(FATAL_ERROR "ngtcp2/nghttp3 not found. Install libngtcp2 and libnghttp3 or set NGTCP2_ROOT/NGHTTP3_ROOT.")
+    endif()
+
+    set(NGTCP2_CONFIGURED TRUE)
+    message(STATUS "QUIC (ngtcp2/nghttp3) available")
+else()
+    message(STATUS "QUIC (ngtcp2) disabled. Build with -DUSE_NGTCP2=ON after installing ngtcp2/nghttp3")
+endif()
 # On macOS with Homebrew, CMake may not find OpenSSL automatically.
 if(NOT OPENSSL_FOUND)
     set(OPENSSL_ROOT_DIR "/opt/homebrew/opt/openssl@3")
@@ -64,6 +123,14 @@ target_link_libraries(hfdown PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
 )
+
+# Apply ngtcp2/nghttp3 include/libs to the hfdown target if configured
+if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
+    target_include_directories(hfdown PRIVATE ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS})
+    target_link_libraries(hfdown PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES})
+    target_compile_definitions(hfdown PRIVATE USE_NGTCP2)
+    message(STATUS "QUIC (ngtcp2/nghttp3) enabled for target hfdown")
+endif()
 
 if(USE_QUIC)
     target_include_directories(hfdown PRIVATE ${QUICHE_INCLUDE_DIR})
