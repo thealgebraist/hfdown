@@ -262,9 +262,10 @@ std::expected<void, VastMonitorErrorInfo> VastMonitor::append_metrics_to_csv(
                  << metrics.cpu.load_average_15min << "\n";
         }
     } else {
-        // CPU-only metrics
+        // CPU-only metrics (8 empty GPU fields: gpu_id,gpu_name,gpu_util_%,gpu_mem_used_mb,gpu_mem_total_mb,gpu_temp_c,gpu_power_w,gpu_power_limit_w)
+        const char* empty_gpu_fields = ",,,,,,,,";
         file << time_buf << ","
-             << ",,,,,,,,,"  // Empty GPU fields
+             << empty_gpu_fields
              << metrics.cpu.utilization_percent << ","
              << metrics.cpu.memory_used_mb << ","
              << metrics.cpu.memory_total_mb << ","

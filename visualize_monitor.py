@@ -151,7 +151,8 @@ def create_visualizations(data, output_prefix='vast_monitor'):
         # Plot GPU Power
         ax = axes[plot_idx]
         for gpu_id, gpu in gpu_data.items():
-            ax.plot(timestamps, gpu['power'], label=f"GPU {gpu_id} (limit: {gpu['power_limit'][0]:.0f}W)", linewidth=2)
+            power_limit = gpu['power_limit'][0] if gpu['power_limit'] else 0
+            ax.plot(timestamps, gpu['power'], label=f"GPU {gpu_id} (limit: {power_limit:.0f}W)", linewidth=2)
         ax.set_xlabel('Time')
         ax.set_ylabel('Power Draw (W)')
         ax.set_title('GPU Power Consumption', fontweight='bold')
