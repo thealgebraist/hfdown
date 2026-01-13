@@ -6,24 +6,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find required packages
-find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # Main executable
 add_executable(hfdown
     src/main.cpp
     src/http_client.cpp
     src/hf_client.cpp
+    src/socket_wrapper.cpp
+    src/tls_socket.cpp
+    src/http_protocol.cpp
 )
 
 target_include_directories(hfdown PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CURL_INCLUDE_DIRS}
+    ${OPENSSL_INCLUDE_DIR}
 )
 
 target_link_libraries(hfdown PRIVATE
     Threads::Threads
-    ${CURL_LIBRARIES}
+    OpenSSL::SSL
+    OpenSSL::Cryptos(hfdown PRIVATE
+    Threads::Threads
 )
 
 # Compiler warnings

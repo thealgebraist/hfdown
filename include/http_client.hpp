@@ -34,6 +34,15 @@ struct HttpErrorInfo {
     int status_code = 0;
 };
 
+struct HttpConfig {
+    size_t buffer_size = 512 * 1024;        // 512KB default
+    size_t file_buffer_size = 1024 * 1024;  // 1MB default
+    int progress_update_ms = 250;            // 250ms default
+    bool enable_http2 = true;
+    bool enable_tcp_nodelay = true;
+    bool enable_tcp_keepalive = true;
+};
+
 class HttpClient {
 public:
     HttpClient();
@@ -62,6 +71,9 @@ public:
     
     // Set timeout in seconds
     void set_timeout(long seconds);
+    
+    // Set performance configuration
+    void set_config(const HttpConfig& config);
 
 private:
     class Impl;
