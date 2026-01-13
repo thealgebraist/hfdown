@@ -47,6 +47,7 @@ add_executable(hfdown
     src/tls_socket.cpp
     src/http_protocol.cpp
     src/rsync_client.cpp
+    src/vast_monitor.cpp
 )
 
 target_include_directories(hfdown PRIVATE

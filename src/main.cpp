@@ -7,6 +7,7 @@
 #include "secret_scanner.hpp"
 #include "http3_client.hpp"
 #include "rsync_client.hpp"
+#include "vast_monitor.hpp"
 #include <iostream>
 #include <sstream>
 #include <format>
@@ -46,6 +47,8 @@ void print_usage(const char* program_name) {
     std::cout << "  git-watch <repo-dir>         Watch repo and auto-push changes\n";
     std::cout << "  install-hook <repo-dir>      Install pre-commit hook to block secrets\n";
     std::cout << "  scan-secrets <file>          Scan file for API keys/tokens\n\n";
+    std::cout << "Vast.ai Monitoring Commands:\n";
+    std::cout << "  vast-monitor <ssh-cmd>       Monitor GPU/CPU resources on Vast.ai server\n\n";
     std::cout << "Options:\n";
     std::cout << "  --token <token>              HuggingFace API token (or set HF_TOKEN env var)\n";
     std::cout << "  --kaggle-user <username>     Kaggle username (or set KAGGLE_USERNAME env var)\n";
@@ -57,6 +60,9 @@ void print_usage(const char* program_name) {
     std::cout << "  --verbose                    Show detailed sync progress\n";
     std::cout << "  --dry-run                    Show what would be synced without downloading\n";
     std::cout << "  --no-checksum                Skip checksum verification (faster but less safe)\n";
+    std::cout << "  --interval <seconds>         Monitoring interval (default: 5)\n";
+    std::cout << "  --duration <seconds>         Monitoring duration, 0=infinite (default: 60)\n";
+    std::cout << "  --output <file>              Output CSV file for monitoring data\n";
     std::cout << "  --help                       Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << std::format("  {} info microsoft/phi-2\n", program_name);
@@ -67,6 +73,7 @@ void print_usage(const char* program_name) {
     std::cout << std::format("  {} kaggle-info pytorch/imagenet\n", program_name);
     std::cout << std::format("  {} kaggle-dl pytorch/imagenet ./datasets/imagenet\n", program_name);
     std::cout << std::format("  {} monitor ./outputs user/repo --extensions png,jpg,wav\n", program_name);
+    std::cout << std::format("  {} vast-monitor 'ssh -p 12345 root@1.2.3.4' --interval 5 --duration 300\n", program_name);
 }
 
 void print_progress_bar(const DownloadProgress& progress) {
@@ -556,6 +563,32 @@ int cmd_rsync_to_vast(const std::string& model_id, const std::string& ssh_cmd,
     return 0;
 }
 
+int cmd_vast_monitor(const std::string& ssh_cmd, int interval, int duration, 
+                     const std::string& output_file) {
+    VastMonitor monitor;
+    
+    MonitorConfig config;
+    config.ssh_command = ssh_cmd;
+    config.interval_seconds = interval;
+    config.duration_seconds = duration;
+    config.output_file = output_file.empty() ? "vast_monitor.csv" : output_file;
+    config.show_realtime = true;
+    config.include_cpu = true;
+    config.include_gpu = true;
+    
+    auto result = monitor.start_monitoring(config);
+    
+    if (!result) {
+        std::cerr << std::format("Error: {}\n", result.error().message);
+        return 1;
+    }
+    
+    std::cout << "\nTo visualize the data, run:\n";
+    std::cout << std::format("  python3 visualize_monitor.py {}\n", config.output_file.string());
+    
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -598,6 +631,9 @@ int main(int argc, char* argv[]) {
     bool verbose = false;
     bool dry_run = false;
     bool no_checksum = false;
+    int interval = 5;
+    int duration = 60;
+    std::string output_file;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--token" && i + 1 < argc) {
@@ -620,6 +656,12 @@ int main(int argc, char* argv[]) {
             dry_run = true;
         } else if (arg == "--no-checksum") {
             no_checksum = true;
+        } else if (arg == "--interval" && i + 1 < argc) {
+            interval = std::stoi(argv[++i]);
+        } else if (arg == "--duration" && i + 1 < argc) {
+            duration = std::stoi(argv[++i]);
+        } else if (arg == "--output" && i + 1 < argc) {
+            output_file = argv[++i];
         } else {
             args.push_back(arg);
         }
@@ -762,6 +804,14 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         return cmd_http3_bench(args[0]);
+    }
+    else if (command == "vast-monitor") {
+        if (args.empty()) {
+            std::cerr << "Error: SSH command required\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        return cmd_vast_monitor(args[0], interval, duration, output_file);
     }
     else {
         std::cerr << std::format("Unknown command: {}\n", command);
