@@ -164,21 +164,73 @@ std::expected<SyncStats, RsyncErrorInfo> RsyncClient::sync_to_local(
     return stats;
 }
 
+// Escape shell special characters
+std::string escape_shell_arg(const std::string& arg) {
+    std::string escaped;
+    escaped.reserve(arg.size() + 10);
+    escaped += "'";
+    for (char c : arg) {
+        if (c == '\'') {
+            escaped += "'\\''";  // Close quote, escape quote, open quote
+        } else {
+            escaped += c;
+        }
+    }
+    escaped += "'";
+    return escaped;
+}
+
+// Validate SSH configuration
+std::expected<void, RsyncErrorInfo> validate_ssh_config(const SshConfig& config) {
+    // Validate port range (uint16_t max is 65535, so only check for 0)
+    if (config.port == 0) {
+        return std::unexpected(RsyncErrorInfo{
+            RsyncError::SshConnectionFailed,
+            "Invalid port number: port cannot be 0"
+        });
+    }
+    
+    // Validate username contains only safe characters
+    if (config.username.empty() || 
+        config.username.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos) {
+        return std::unexpected(RsyncErrorInfo{
+            RsyncError::SshConnectionFailed,
+            "Invalid username: must contain only alphanumeric characters, underscore, or hyphen"
+        });
+    }
+    
+    // Validate host (basic check - alphanumeric, dots, hyphens, colons for IPv6)
+    if (config.host.empty() || 
+        config.host.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:") != std::string::npos) {
+        return std::unexpected(RsyncErrorInfo{
+            RsyncError::SshConnectionFailed,
+            "Invalid host: must be a valid hostname or IP address"
+        });
+    }
+    
+    return {};
+}
+
 std::expected<std::string, RsyncErrorInfo> RsyncClient::ssh_execute(
     const SshConfig& config,
     const std::string& command)
 {
-    // Build SSH command
+    // Validate configuration first
+    if (auto validation = validate_ssh_config(config); !validation) {
+        return std::unexpected(validation.error());
+    }
+    
+    // Build SSH command with escaped arguments
     std::ostringstream ssh_cmd;
-    ssh_cmd << "ssh ";
+    ssh_cmd << "ssh -o StrictHostKeyChecking=no -o BatchMode=yes ";
     
     if (!config.key_path.empty()) {
-        ssh_cmd << "-i " << config.key_path << " ";
+        ssh_cmd << "-i " << escape_shell_arg(config.key_path) << " ";
     }
     
     ssh_cmd << "-p " << config.port << " ";
     ssh_cmd << config.username << "@" << config.host << " ";
-    ssh_cmd << "'" << command << "'";
+    ssh_cmd << escape_shell_arg(command);
     
     // Execute command and capture output
     FILE* pipe = popen(ssh_cmd.str().c_str(), "r");
@@ -211,17 +263,22 @@ std::expected<void, RsyncErrorInfo> RsyncClient::scp_transfer(
     const std::filesystem::path& local_file,
     const std::string& remote_path)
 {
-    // Build SCP command
+    // Validate configuration first
+    if (auto validation = validate_ssh_config(config); !validation) {
+        return std::unexpected(validation.error());
+    }
+    
+    // Build SCP command with escaped arguments
     std::ostringstream scp_cmd;
-    scp_cmd << "scp ";
+    scp_cmd << "scp -o StrictHostKeyChecking=no -o BatchMode=yes ";
     
     if (!config.key_path.empty()) {
-        scp_cmd << "-i " << config.key_path << " ";
+        scp_cmd << "-i " << escape_shell_arg(config.key_path) << " ";
     }
     
     scp_cmd << "-P " << config.port << " ";
-    scp_cmd << local_file.string() << " ";
-    scp_cmd << config.username << "@" << config.host << ":" << remote_path;
+    scp_cmd << escape_shell_arg(local_file.string()) << " ";
+    scp_cmd << config.username << "@" << config.host << ":" << escape_shell_arg(remote_path);
     
     int status = system(scp_cmd.str().c_str());
     if (status != 0) {
@@ -316,7 +373,8 @@ std::expected<SshConfig, RsyncErrorInfo> RsyncClient::parse_vast_ssh(
     const std::string& remote_path)
 {
     // Parse Vast.ai style: "ssh -p PORT root@IP" or "ssh -p PORT -i KEY root@IP"
-    std::regex vast_regex(R"(ssh\s+-p\s+(\d+)(?:\s+-i\s+(\S+))?\s+(\w+)@([\d\.]+))");
+    // Support IPv4, IPv6, and hostnames
+    std::regex vast_regex(R"(ssh\s+-p\s+(\d+)(?:\s+-i\s+(\S+))?\s+([\w-]+)@([\w\d\.\-:]+))");
     std::smatch matches;
     
     if (!std::regex_search(connection_string, matches, vast_regex)) {
@@ -327,7 +385,23 @@ std::expected<SshConfig, RsyncErrorInfo> RsyncClient::parse_vast_ssh(
     }
     
     SshConfig config;
-    config.port = static_cast<uint16_t>(std::stoi(matches[1].str()));
+    
+    // Validate and parse port
+    try {
+        int port_num = std::stoi(matches[1].str());
+        if (port_num < 1 || port_num > 65535) {
+            return std::unexpected(RsyncErrorInfo{
+                RsyncError::SshConnectionFailed,
+                std::format("Invalid port number: {} (must be 1-65535)", port_num)
+            });
+        }
+        config.port = static_cast<uint16_t>(port_num);
+    } catch (const std::exception& e) {
+        return std::unexpected(RsyncErrorInfo{
+            RsyncError::SshConnectionFailed,
+            std::format("Failed to parse port number: {}", e.what())
+        });
+    }
     
     if (matches[2].matched) {
         config.key_path = matches[2].str();
