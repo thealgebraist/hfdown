@@ -210,7 +210,7 @@ endif()
 
 # Test executables
 if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
-    add_executable(test_http3 sex/tests/test_http3.cpp
+    add_executable(test_http3 src/tests/test_http3.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
         src/async_file_writer.cpp
@@ -220,7 +220,7 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     target_link_libraries(test_http3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_http3 PRIVATE USE_NGTCP2)
 
-    add_executable(test_http3_range sex/tests/test_http3_range.cpp
+    add_executable(test_http3_range src/tests/test_http3_range.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
         src/async_file_writer.cpp
@@ -230,7 +230,7 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     target_link_libraries(test_http3_range PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_http3_range PRIVATE USE_NGTCP2)
 
-    add_executable(benchmark_h3_h2 sex/tests/benchmark_h3_h2.cpp
+    add_executable(benchmark_h3_h2 src/tests/benchmark_h3_h2.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
         src/async_file_writer.cpp
@@ -240,7 +240,7 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     target_link_libraries(benchmark_h3_h2 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(benchmark_h3_h2 PRIVATE USE_NGTCP2)
 
-    add_executable(test_providers_h3 sex/tests/test_providers_h3.cpp
+    add_executable(test_providers_h3 src/tests/test_providers_h3.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
         src/async_file_writer.cpp
