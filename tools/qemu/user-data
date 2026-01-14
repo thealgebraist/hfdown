@@ -1,0 +1,25 @@
+#cloud-config
+users:
+  - name: ubuntu
+    gecos: Ubuntu User
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users,adm
+    lock-passwd: false
+    passwd: $6$rounds=4096$saltsalt$KcE1Gz1q2Yv1QG/EXAMPLEPASSWORDHASH
+
+ssh_pwauth: true
+
+package_update: true
+package_upgrade: true
+packages:
+  - qemu-guest-agent
+  - python3
+  - python3-pip
+  - git
+  - cloud-init
+
+runcmd:
+  - [ sh, -lc, 'echo "Mount 9p with: sudo mkdir -p /mnt/host && sudo mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host" > /home/ubuntu/README Mount instructions ]'
+  - [ sh, -lc, 'chown ubuntu:ubuntu /home/ubuntu/README' ]
+
+final_message: "The system is finally up. SSH on port forwarded to host port 2222. User: ubuntu / password: ubuntu"
