@@ -17,6 +17,30 @@
 
 using namespace hfdown;
 
+enum class FSMState {
+    Init,
+    ParseArgs,
+    PreCommand,
+    RunCommand,
+    PostCommand,
+    Error,
+    Done
+};
+
+struct FSMContext {
+    int argc;
+    char** argv;
+    std::string cmd, token, proto, mirror;
+    int threads = 4;
+    std::vector<std::string> args;
+    int exit_code = 0;
+    std::string error_message;
+    // FSM extension: add timing, logging, and result info
+    std::chrono::steady_clock::time_point start_time;
+    std::chrono::steady_clock::time_point end_time;
+    std::string result_message;
+};
+
 void print_usage(const char* program_name) {
     std::cout << "HuggingFace & Kaggle Downloader (C++23)\n\n"
               << "Usage: " << program_name << " <command> [options]\n\n"
@@ -83,22 +107,117 @@ int cmd_h3_test(const std::string& url, const std::string& proto) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { print_usage(argv[0]); return 1; }
-    std::string cmd = argv[1], token, proto, mirror;
-    int threads = 4;
-    std::vector<std::string> args;
-    for (int i = 2; i < argc; ++i) {
-        std::string a = argv[i];
-        if (a == "--token" && i + 1 < argc) token = argv[++i];
-        else if (a == "--protocol" && i + 1 < argc) proto = argv[++i];
-        else if (a == "--mirror" && i + 1 < argc) mirror = argv[++i];
-        else if (a == "--threads" && i + 1 < argc) threads = std::stoi(argv[++i]);
-        else args.push_back(a);
+    FSMState state = FSMState::Init;
+    FSMContext ctx{argc, argv};
+    while (state != FSMState::Done) {
+        switch (state) {
+            case FSMState::Init:
+                ctx.start_time = std::chrono::steady_clock::now();
+                if (ctx.argc < 2) {
+                    ctx.exit_code = 1;
+                    state = FSMState::Error;
+                } else {
+                    ctx.cmd = ctx.argv[1];
+                    state = FSMState::ParseArgs;
+                }
+                break;
+            case FSMState::ParseArgs: {
+                for (int i = 2; i < ctx.argc; ++i) {
+                    std::string a = ctx.argv[i];
+                    if (a == "--token" && i + 1 < ctx.argc) ctx.token = ctx.argv[++i];
+                    else if (a == "--protocol" && i + 1 < ctx.argc) ctx.proto = ctx.argv[++i];
+                    else if (a == "--mirror" && i + 1 < ctx.argc) ctx.mirror = ctx.argv[++i];
+                    else if (a == "--threads" && i + 1 < ctx.argc) ctx.threads = std::stoi(ctx.argv[++i]);
+                    else ctx.args.push_back(a);
+                }
+                state = FSMState::PreCommand;
+                break;
+            }
+            case FSMState::PreCommand:
+                // Pre-command hook: logging, validation, and setup for all commands
+                std::cout << "[FSM] PreCommand: " << ctx.cmd << ", Args: ";
+                for (const auto& a : ctx.args) std::cout << a << " ";
+                std::cout << std::endl;
+
+                // Example: validate required arguments for each command
+                if (ctx.cmd == "info") {
+                    if (ctx.args.empty()) {
+                        ctx.exit_code = 1;
+                        ctx.error_message = "info requires <model-id> argument.";
+                        state = FSMState::Error;
+                        break;
+                    }
+                } else if (ctx.cmd == "download") {
+                    if (ctx.args.empty()) {
+                        ctx.exit_code = 1;
+                        ctx.error_message = "download requires <model-id> argument.";
+                        state = FSMState::Error;
+                        break;
+                    }
+                } else if (ctx.cmd == "file") {
+                    if (ctx.args.size() < 2) {
+                        ctx.exit_code = 1;
+                        ctx.error_message = "file requires <model-id> and <filename> arguments.";
+                        state = FSMState::Error;
+                        break;
+                    }
+                } else if (ctx.cmd == "http3-test") {
+                    if (ctx.args.empty()) {
+                        ctx.exit_code = 1;
+                        ctx.error_message = "http3-test requires <url> argument.";
+                        state = FSMState::Error;
+                        break;
+                    }
+                } else {
+                    ctx.exit_code = 1;
+                    ctx.error_message = "Unknown command: " + ctx.cmd;
+                    state = FSMState::Error;
+                    break;
+                }
+
+                // Example: setup or logging for all commands
+                std::cout << "[FSM] PreCommand checks passed for '" << ctx.cmd << "'\n";
+                state = FSMState::RunCommand;
+                break;
+            case FSMState::RunCommand:
+                if (ctx.cmd == "info" && !ctx.args.empty()) {
+                    ctx.exit_code = cmd_info(ctx.args[0], ctx.token, ctx.proto, ctx.mirror);
+                    ctx.result_message = "Info command executed.";
+                    state = FSMState::PostCommand;
+                } else if (ctx.cmd == "download" && !ctx.args.empty()) {
+                    ctx.exit_code = cmd_download(ctx.args[0], ctx.args.size() > 1 ? ctx.args[1] : ".", ctx.token, ctx.proto, ctx.mirror, ctx.threads);
+                    ctx.result_message = "Download command executed.";
+                    state = FSMState::PostCommand;
+                } else if (ctx.cmd == "file" && ctx.args.size() > 1) {
+                    ctx.exit_code = cmd_download_file(ctx.args[0], ctx.args[1], ctx.token, ctx.proto, ctx.mirror);
+                    ctx.result_message = "File command executed.";
+                    state = FSMState::PostCommand;
+                } else if (ctx.cmd == "http3-test" && !ctx.args.empty()) {
+                    ctx.exit_code = cmd_h3_test(ctx.args[0], ctx.proto);
+                    ctx.result_message = "HTTP3-test command executed.";
+                    state = FSMState::PostCommand;
+                } else {
+                    ctx.exit_code = 1;
+                    ctx.error_message = "Invalid command or arguments.";
+                    state = FSMState::Error;
+                }
+                break;
+            case FSMState::PostCommand:
+                ctx.end_time = std::chrono::steady_clock::now();
+                {
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(ctx.end_time - ctx.start_time).count();
+                    std::cout << "[FSM] " << ctx.result_message << " Elapsed: " << ms << " ms\n";
+                }
+                state = FSMState::Done;
+                break;
+            case FSMState::Error:
+                if (!ctx.error_message.empty()) std::cerr << "Error: " << ctx.error_message << "\n";
+                print_usage(ctx.argv[0]);
+                state = FSMState::Done;
+                break;
+            case FSMState::Done:
+                break;
+        }
     }
-    if (cmd == "info" && !args.empty()) return cmd_info(args[0], token, proto, mirror);
-    if (cmd == "download" && !args.empty()) return cmd_download(args[0], args.size() > 1 ? args[1] : ".", token, proto, mirror, threads);
-    if (cmd == "file" && args.size() > 1) return cmd_download_file(args[0], args[1], token, proto, mirror);
-    if (cmd == "http3-test" && !args.empty()) return cmd_h3_test(args[0], proto);
-    print_usage(argv[0]);
-    return 1;
+    return ctx.exit_code;
 }

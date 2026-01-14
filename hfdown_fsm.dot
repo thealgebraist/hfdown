@@ -1,0 +1,26 @@
+digraph hfdown_fsm {
+    rankdir=LR;
+    size="8,5";
+    node [shape=box, style=rounded];
+
+    Idle [label="Idle"];
+    FetchInfo [label="Fetching Model Info"];
+    PlanDL [label="Planning Downloads"];
+    DLChunks [label="Downloading Chunks"];
+    FinalizeDL [label="Finalizing Download"];
+    Complete [label="Download Complete", shape=doublecircle];
+    Error [label="Error State", shape=octagon];
+
+    Idle -> FetchInfo [label="DOWNLOAD_COMMAND"];
+    FetchInfo -> PlanDL [label="MODEL_INFO_SUCCESS"];
+    FetchInfo -> Error [label="MODEL_INFO_FAILED / NETWORK_ERROR"];
+    PlanDL -> DLChunks [label="PLANNING_SUCCESS"];
+    PlanDL -> Error [label="INSUFFICIENT_DISK_SPACE"];
+    DLChunks -> DLChunks [label="CHUNK_RECEIVED / CHUNK_COMPLETED"];
+    DLChunks -> Error [label="NETWORK_FAILURE / CHUNK_DOWNLOAD_FAILED"];
+    DLChunks -> FinalizeDL [label="ALL_CHUNKS_QUEUED"];
+    FinalizeDL -> Complete [label="ALL_WRITES_COMPLETED"];
+    FinalizeDL -> Error [label="FILE_WRITE_FAILED"];
+    Error -> Idle [label="Retry / Exit", style=dashed];
+    Complete -> Idle [label="Exit", style=dashed];
+}

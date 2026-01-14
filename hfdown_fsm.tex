@@ -1,0 +1,56 @@
+\documentclass{article}
+\usepackage{tikz}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+\usepackage{amsmath} % Added for \text command
+\usepackage{stack_commands} % Added for \shortstack command
+\usetikzlibrary{automata, positioning, arrows}
+
+\begin{document}
+
+\section*{`hfdown` Download Process FSM}
+
+\begin{tikzpicture}[
+    auto,
+    node distance=3.5cm and 4.5cm, % Increased distance horizontally and vertically
+    state/.style={
+        rectangle, rounded corners, draw, thick,
+        % minimum width=3cm, % Removed fixed width
+        % minimum height=1cm, % Removed fixed height
+        align=center
+    },
+    initial/.style={state, initial text={}},
+    final/.style={state, double}, % Removed fixed width
+    every edge/.style={draw, thick, ->}
+]
+
+\node[initial, state] (idle) {Idle};
+\node[state, right=of idle] (fetch_info) {Fetching Model Info};
+\node[state, right=of fetch_info] (plan_dl) {Planning Downloads};
+\node[state, below right=of plan_dl] (dl_chunks) {Downloading Chunks};
+\node[state, below left=of plan_dl] (finalize_dl) {Finalizing Download}; % Corrected: plan_dl to plan_chunks
+\node[final, left=of finalize_dl] (complete) {Download Complete};
+\node[state, below=of dl_chunks, yshift=-1.5cm] (error) {Error State};
+
+\path (idle) edge node[midway] {\text{DOWNLOAD_COMMAND}} (fetch_info);
+
+\path (fetch_info) edge node[midway] {\text{MODEL_INFO_SUCCESS}} (plan_dl);
+\path (fetch_info) edge node[midway] {\text{\shortstack{MODEL_INFO_FAILED \\ and NETWORK_ERROR}}} (error);
+
+\path (plan_dl) edge node[midway] {\text{PLANNING_SUCCESS}} (dl_chunks);
+\path (plan_dl) edge node[midway] {\text{INSUFFICIENT_DISK_SPACE}} (error);
+
+\path (dl_chunks) edge node[midway] {\text{\shortstack{CHUNK_RECEIVED \\ and CHUNK_COMPLETED}}} (dl_chunks); % Self-loop
+\path (dl_chunks) edge node[midway] {\text{\shortstack{NETWORK_FAILURE \\ and CHUNK_DOWNLOAD_FAILED}}} (error);
+\path (dl_chunks) edge node[midway] {\text{ALL_CHUNKS_QUEUED}} (finalize_dl);
+
+\path (finalize_dl) edge node[midway] {\text{ALL_WRITES_COMPLETED}} (complete);
+\path (finalize_dl) edge node[midway] {\text{FILE_WRITE_FAILED}} (error);
+
+% Implicit transitions for error recovery/exit
+\path (error) edge[dashed, bend left] node[midway] {\text{Retry and Exit}} (idle);
+\path (complete) edge[dashed, bend left] node[midway] {\text{Exit}} (idle);
+
+\end{tikzpicture}
+
+\end{document}

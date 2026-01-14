@@ -32,6 +32,16 @@ struct HFErrorInfo {
     std::string message;
 };
 
+enum class DownloadState {
+    Idle,
+    Fetching_Model_Info,
+    Planning_Downloads,
+    Downloading_Chunks,
+    Finalizing_Download,
+    Download_Complete,
+    Error_State
+};
+
 class HuggingFaceClient {
 public:
     HuggingFaceClient();
@@ -68,6 +78,7 @@ private:
     Http3Client http_client_;
     bool use_mirror_ = false;
     std::string mirror_url_ = "https://hf-mirror.com";
+    DownloadState current_state_ = DownloadState::Idle;
     
     std::string get_api_url(const std::string& model_id) const;
     std::string get_file_url(const std::string& model_id, const std::string& filename) const;
