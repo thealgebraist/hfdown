@@ -40,15 +40,31 @@ def setup_flux_model():
         
         logger.info("Loading Flux1 Schnell model...")
         
+        # Check CUDA availability
+        if torch.cuda.is_available():
+            device = "cuda"
+            logger.info(f"CUDA available: {torch.cuda.get_device_name(0)}")
+            logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        else:
+            device = "cpu"
+            logger.warning("CUDA not available, using CPU (will be very slow)")
+        
         # Load the model
         pipe = FluxPipeline.from_pretrained(
             "black-forest-labs/FLUX.1-schnell",
-            torch_dtype=torch.bfloat16
+            torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32
         )
         
         # Move to GPU if available
-        device = "cuda" if torch.cuda.is_available() else "cpu"
         pipe = pipe.to(device)
+        
+        # Enable memory optimizations
+        if device == "cuda":
+            try:
+                pipe.enable_model_cpu_offload()
+                logger.info("Enabled CPU offload for memory efficiency")
+            except:
+                logger.warning("Could not enable CPU offload")
         
         logger.info(f"Model loaded successfully on {device}")
         return pipe

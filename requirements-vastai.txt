@@ -1,0 +1,12 @@
+# Requirements for Vast.ai Flux1 Schnell Orchestration
+# Local machine requirements (for orchestrator)
+psutil>=5.9.0
+gitpython>=3.1.0
+
+# Remote instance requirements (installed automatically)
+# torch>=2.0.0  (installed on Vast.ai)
+# diffusers>=0.21.0
+# transformers>=4.30.0
+# accelerate>=0.20.0
+# safetensors>=0.3.0
+# pillow>=9.0.0

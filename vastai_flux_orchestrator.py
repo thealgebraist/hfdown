@@ -75,6 +75,29 @@ class VastAIOrchestrator:
         
         return default_config
     
+    def test_connection(self) -> bool:
+        """
+        Test SSH connection to the Vast.ai instance
+        
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            logger.info("Testing SSH connection...")
+            result = self.run_remote_command("echo 'Connection successful'", check=False)
+            
+            if result.returncode == 0:
+                logger.info("SSH connection verified")
+                return True
+            else:
+                logger.error("SSH connection failed")
+                logger.error(f"stderr: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Connection test failed: {e}")
+            return False
+    
     def run_remote_command(self, command: str, check: bool = True) -> subprocess.CompletedProcess:
         """
         Execute a command on the remote Vast.ai instance
@@ -125,6 +148,38 @@ class VastAIOrchestrator:
         
         logger.info(f"Copying {local_path} to {remote_path}")
         subprocess.run(scp_command, shell=True, check=True)
+    
+    def check_disk_space(self) -> bool:
+        """
+        Check if remote instance has sufficient disk space
+        
+        Returns:
+            True if sufficient space available, False otherwise
+        """
+        try:
+            logger.info("Checking disk space...")
+            result = self.run_remote_command("df -h / | tail -n 1", check=False)
+            
+            if result.returncode == 0:
+                logger.info(f"Disk usage: {result.stdout.strip()}")
+                
+                # Parse available space (rough check)
+                parts = result.stdout.split()
+                if len(parts) >= 4:
+                    avail = parts[3]
+                    # Check if we have at least 50GB available
+                    if 'G' in avail or 'T' in avail:
+                        logger.info("Sufficient disk space available")
+                        return True
+                    else:
+                        logger.warning(f"Low disk space: {avail}")
+                        return False
+            
+            return True  # Assume OK if we can't check
+            
+        except Exception as e:
+            logger.warning(f"Could not check disk space: {e}")
+            return True  # Assume OK if we can't check
     
     def install_packages(self):
         """Install required packages on the remote instance"""
@@ -334,6 +389,14 @@ class VastAIOrchestrator:
         """
         try:
             logger.info("Starting Vast.ai Flux1 Schnell orchestration...")
+            
+            # Test connection first
+            if not self.test_connection():
+                raise RuntimeError("Failed to connect to Vast.ai instance")
+            
+            # Check disk space
+            if not self.check_disk_space():
+                logger.warning("Low disk space detected, but continuing...")
             
             # Setup
             self.setup_workspace()
