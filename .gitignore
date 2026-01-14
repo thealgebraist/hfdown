@@ -20,3 +20,5 @@ test_https
 .idea/
 cmake-build-*/
 build-asan/
+__pycache__/
+*.pyc
