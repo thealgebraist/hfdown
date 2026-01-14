@@ -63,8 +63,8 @@ def setup_flux_model():
             try:
                 pipe.enable_model_cpu_offload()
                 logger.info("Enabled CPU offload for memory efficiency")
-            except:
-                logger.warning("Could not enable CPU offload")
+            except Exception as e:
+                logger.warning(f"Could not enable CPU offload: {e}")
         
         logger.info(f"Model loaded successfully on {device}")
         return pipe
@@ -307,7 +307,7 @@ def run_generation(
                 failed_images += 1
                 logger.warning(f"Failed to generate image for prompt: {status.get('prompt', 'unknown')}")
                 
-        except:
+        except Exception:
             # Timeout - check if processes are still alive
             for i, p in enumerate(processes):
                 if not p.is_alive() and p.exitcode != 0:

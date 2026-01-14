@@ -21,6 +21,13 @@ test_https
 cmake-build-*/
 build-asan/
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
 # Vast.ai outputs
 generated_images/
 resource_metrics/

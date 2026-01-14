@@ -130,50 +130,80 @@ class VastAIOrchestrator:
     
     def copy_to_remote(self, local_path: str, remote_path: str):
         """Copy file to remote instance"""
-        # Extract SSH details from ssh_command
-        ssh_parts = self.ssh_command.split()
+        import shlex
+        
+        # Extract SSH details from ssh_command using proper shell parsing
+        ssh_parts = shlex.split(self.ssh_command)
         port = None
         host = None
         
-        for i, part in enumerate(ssh_parts):
-            if part == '-p' and i + 1 < len(ssh_parts):
+        # Parse SSH command options
+        i = 0
+        while i < len(ssh_parts):
+            part = ssh_parts[i]
+            
+            # Handle -p or -P with space
+            if part in ['-p', '-P'] and i + 1 < len(ssh_parts):
                 port = ssh_parts[i + 1]
+                i += 2
+            # Handle -p12345 or -P12345 (no space)
+            elif part.startswith('-p') and len(part) > 2:
+                port = part[2:]
+                i += 1
+            elif part.startswith('-P') and len(part) > 2:
+                port = part[2:]
+                i += 1
+            # Find host (contains @)
             elif '@' in part:
                 host = part
+                i += 1
+            else:
+                i += 1
         
+        # Build scp command
         if port and host:
-            scp_command = f"scp -P {port} {local_path} {host}:{remote_path}"
+            scp_command = f"scp -P {port} {shlex.quote(local_path)} {host}:{shlex.quote(remote_path)}"
+        elif host:
+            scp_command = f"scp {shlex.quote(local_path)} {host}:{shlex.quote(remote_path)}"
         else:
-            scp_command = f"scp {local_path} {host}:{remote_path}"
+            raise ValueError("Could not extract host from SSH command")
         
         logger.info(f"Copying {local_path} to {remote_path}")
         subprocess.run(scp_command, shell=True, check=True)
     
-    def check_disk_space(self) -> bool:
+    def check_disk_space(self, min_gb: float = 50.0) -> bool:
         """
         Check if remote instance has sufficient disk space
         
+        Args:
+            min_gb: Minimum required GB of free space
+            
         Returns:
             True if sufficient space available, False otherwise
         """
         try:
             logger.info("Checking disk space...")
-            result = self.run_remote_command("df -h / | tail -n 1", check=False)
+            result = self.run_remote_command("df -BG / | tail -n 1", check=False)
             
             if result.returncode == 0:
                 logger.info(f"Disk usage: {result.stdout.strip()}")
                 
-                # Parse available space (rough check)
+                # Parse available space from df output (in GB)
                 parts = result.stdout.split()
                 if len(parts) >= 4:
-                    avail = parts[3]
-                    # Check if we have at least 50GB available
-                    if 'G' in avail or 'T' in avail:
-                        logger.info("Sufficient disk space available")
-                        return True
-                    else:
-                        logger.warning(f"Low disk space: {avail}")
-                        return False
+                    avail_str = parts[3].rstrip('G')  # Remove 'G' suffix
+                    try:
+                        avail_gb = float(avail_str)
+                        logger.info(f"Available disk space: {avail_gb:.1f} GB")
+                        
+                        if avail_gb >= min_gb:
+                            logger.info(f"Sufficient disk space available ({avail_gb:.1f} GB >= {min_gb} GB)")
+                            return True
+                        else:
+                            logger.warning(f"Low disk space: {avail_gb:.1f} GB < {min_gb} GB required")
+                            return False
+                    except ValueError:
+                        logger.warning(f"Could not parse disk space value: {avail_str}")
             
             return True  # Assume OK if we can't check
             

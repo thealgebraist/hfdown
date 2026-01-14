@@ -225,8 +225,12 @@ def append_to_timeseries(metrics: Dict, output_dir: str):
             
             # Calculate GPU totals
             gpu_count = len(metrics.get("gpu", []))
-            gpu_memory_used = sum(gpu.get("memory_allocated_gb", gpu.get("memory_used_mb", 0) / 1024) 
-                                 for gpu in metrics.get("gpu", []))
+            # Sum GPU memory in GB (converting MB to GB if needed)
+            gpu_memory_used = sum(
+                gpu.get("memory_allocated_gb", 0) or  # PyTorch in GB
+                (gpu.get("memory_used_mb", 0) / 1024.0)  # nvidia-smi in MB, convert to GB
+                for gpu in metrics.get("gpu", [])
+            )
             gpu_util = sum(gpu.get("utilization_percent", 0) for gpu in metrics.get("gpu", [])) / max(gpu_count, 1)
             
             # Write data row
