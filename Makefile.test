@@ -6,15 +6,15 @@ PORT = 8888
 
 setup:
 	@echo "Generating test model data..."
-	python3 sex/tests/generate_test_data.py --dir $(TEST_DATA_DIR) --small 100 --large 3
+	python3 src/tests/generate_test_data.py --dir $(TEST_DATA_DIR) --small 100 --large 3
 	@echo "Building hfdown..."
 	cmake --build build --target hfdown
 
 run-benchmark: setup
 	@echo "Starting mock server and running benchmark..."
-	python3 sex/tests/test_server.py $(TEST_DATA_DIR) & SERVER_PID=$$! ; \
+	python3 src/tests/test_server.py $(TEST_DATA_DIR) & SERVER_PID=$$! ; \
 	sleep 2 ; \
-	python3 sex/tests/benchmark_local.py ; \
+	python3 src/tests/benchmark_local.py ; \
 	kill $$SERVER_PID
 
 clean:

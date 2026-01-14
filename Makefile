@@ -12,30 +12,30 @@ build:
 	mkdir -p build && cd build && cmake .. && make -j$(shell nproc 2>/dev/null || sysctl -n hw.ncpu)
 
 generate:
-	python3 sex/tests/generate_random_benchmark_data.py --out-dir $(DATA_DIR) --model-name $(MODEL_ID) --num-small 200 --num-large 20
+	python3 src/tests/generate_random_benchmark_data.py --out-dir $(DATA_DIR) --model-name $(MODEL_ID) --num-small 200 --num-large 20
 
 server: generate
 	@echo "Starting local HF server on port $(PORT)..."
-	@python3 sex/tests/test_server.py $(DATA_DIR) > $(SERVER_LOG) 2>&1 & echo $$! > server.pid
+	@python3 src/tests/test_server.py $(DATA_DIR) > $(SERVER_LOG) 2>&1 & echo $$! > server.pid
 	@sleep 5
 
 server-no-gen:
 	@rm -f server.port
 	@echo "Starting local HF server on dynamic port..."
-	@python3 sex/tests/test_server.py $(DATA_DIR) > $(SERVER_LOG) 2>&1 & echo $$! > server.pid
+	@python3 src/tests/test_server.py $(DATA_DIR) > $(SERVER_LOG) 2>&1 & echo $$! > server.pid
 	@while [ ! -f server.port ]; do sleep 0.5; done
 	@echo "Server started on port `cat server.port`"
 
 benchmark: build server
 	@echo "Running benchmark..."
 	@PORT=`cat server.port`; \
-	python3 sex/tests/benchmark_ttest.py --binary $(BIN) --model-id $(MODEL_ID) --iterations 10 --mirror http://localhost:$$PORT
+	python3 src/tests/benchmark_ttest.py --binary $(BIN) --model-id $(MODEL_ID) --iterations 10 --mirror http://localhost:$$PORT
 	@$(MAKE) stop-server
 
 extreme-benchmark: build
 	@echo "Preparing extreme benchmark data (1024 small files + 512MB, 1GB, 2GB with RANDOM bytes)..."
 	rm -rf $(DATA_DIR)
-	python3 sex/tests/generate_random_benchmark_data.py --out-dir $(DATA_DIR) --model-name $(MODEL_ID) \
+	python3 src/tests/generate_random_benchmark_data.py --out-dir $(DATA_DIR) --model-name $(MODEL_ID) \
 		--num-small 1024 --small-size-kb 1.0 \
 		--large-sizes-mb 512 1024 2048 --random-large
 	@$(MAKE) server-no-gen
