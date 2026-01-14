@@ -229,6 +229,7 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback_func);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &pdata);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, pImpl_->config.buffer_size);
 
     if (resume_offset > 0) {
         curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)resume_offset);

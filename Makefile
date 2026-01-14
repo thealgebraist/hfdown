@@ -47,8 +47,15 @@ extreme-benchmark: build
 		timeout -s 9 60s $(BIN) download $(MODEL_ID) test_download_$$t --mirror http://localhost:$$PORT --threads $$t || echo "Download timed out or failed"; \
 		find test_download_$$t -type f | wc -l | xargs echo "Files downloaded:"; \
 		du -sh test_download_$$t 2>/dev/null || echo "Directory empty"; \
-	done
-	@$(MAKE) stop-server
+	done; \
+	echo "Running profiling iteration (8 threads)..."; \
+	rm -rf test_download_profile; \
+	$(BIN) download $(MODEL_ID) test_download_profile --mirror http://localhost:$$PORT --threads 8 > /dev/null & \
+	PID=$$!; \
+	sample $$PID 10 -file profile_extreme.txt; \
+	wait $$PID; \
+	$(MAKE) stop-server
+	@echo "Profile saved to profile_extreme.txt"
 
 profile: build server
 	@echo "Running profile with 'sample' (macOS specific)..."

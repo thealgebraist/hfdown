@@ -10,15 +10,6 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBUV REQUIRED libuv)
-set(LIBUV_INCLUDE_DIRS "/opt/homebrew/Cellar/libuv/1.51.0/include")
-set(LIBUV_LIBRARIES "/opt/homebrew/Cellar/libuv/1.51.0/lib/libuv.a")
-
-pkg_check_modules(LIBURING QUIET liburing)
-if(LIBURING_FOUND)
-    add_definitions(-DHAS_IO_URING)
-    message(STATUS "io_uring support enabled")
-endif()
 
 # Optional QUIC (quiche) support
 option(USE_QUIC "Enable QUIC (quiche) support" OFF)
@@ -172,7 +163,6 @@ add_executable(hfdown
 target_include_directories(hfdown PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${OPENSSL_INCLUDE_DIR}
-    ${LIBUV_INCLUDE_DIRS}
 )
 
 target_link_libraries(hfdown PRIVATE
@@ -180,8 +170,6 @@ target_link_libraries(hfdown PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
     CURL::libcurl
-    ${LIBUV_LIBRARIES}
-    ${LIBURING_LIBRARIES}
 )
 
 # Apply ngtcp2/nghttp3 include/libs to the hfdown target if configured
@@ -220,7 +208,7 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     target_link_libraries(test_http3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_http3 PRIVATE USE_NGTCP2)
 
-    add_executable(test_http3_range src/tests/test_http3_range.cpp
+    add_executable(test_http3_range test_http3_range.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
         src/async_file_writer.cpp
@@ -230,7 +218,7 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     target_link_libraries(test_http3_range PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_http3_range PRIVATE USE_NGTCP2)
 
-    add_executable(benchmark_h3_h2 src/tests/benchmark_h3_h2.cpp
+    add_executable(benchmark_h3_h2 benchmark_h3_h2.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
         src/async_file_writer.cpp
@@ -240,7 +228,7 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     target_link_libraries(benchmark_h3_h2 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(benchmark_h3_h2 PRIVATE USE_NGTCP2)
 
-    add_executable(test_providers_h3 src/tests/test_providers_h3.cpp
+    add_executable(test_providers_h3 test_providers_h3.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
         src/async_file_writer.cpp
