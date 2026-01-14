@@ -294,9 +294,42 @@ Download models directly to your Vast.ai GPU instance:
 - `--no-checksum`: Skip checksum verification (faster but less safe, only compares sizes)
 - `--token <token>`: HuggingFace API token for private models
 
+## Vast.ai Flux1 Schnell Orchestration (New!)
+
+HFDown now includes a complete orchestration system for running Flux1 Schnell image generation on Vast.ai GPU instances!
+
+### Features
+
+- 🚀 **Automated Remote Setup**: Install packages on Vast.ai instances
+- 🎨 **Flux1 Schnell**: Fast image generation using vanilla PyTorch
+- ⚡ **Multi-Process**: Parallel generation with multiple processes
+- 📊 **Process Monitoring**: Track crashes and success
+- 🔄 **Auto Git Commits**: Automatically commit outputs to GitHub
+- 📈 **Resource Monitoring**: Track CPU/GPU/memory and commit metrics
+- 🛑 **Auto Shutdown**: Close server when done to save costs
+
+### Quick Start
+
+```bash
+# Create prompts file
+cat > prompts.txt << EOF
+A serene mountain landscape at sunset
+A futuristic city with flying cars
+EOF
+
+# Run orchestrator
+python3 vastai_flux_orchestrator.py \
+  "ssh -p 12345 root@1.2.3.4" \
+  prompts.txt \
+  --config vastai_config.json
+```
+
+See [VASTAI_FLUX_README.md](VASTAI_FLUX_README.md) for complete documentation.
+
 ## Future Enhancements
 
 - [x] Rsync-like incremental downloads
+- [x] Vast.ai Flux1 Schnell orchestration
 - [ ] Parallel file downloads
 - [ ] Custom branch/revision support
 - [ ] Cache management
@@ -307,3 +340,4 @@ Download models directly to your Vast.ai GPU instance:
 - [HuggingFace Hub Documentation](https://huggingface.co/docs/hub/index)
 - [HuggingFace Models](https://huggingface.co/models)
 - [Vast.ai Documentation](https://vast.ai/docs/)
+- [Flux1 Model Card](https://huggingface.co/black-forest-labs/FLUX.1-schnell)

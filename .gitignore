@@ -20,3 +20,10 @@ test_https
 .idea/
 cmake-build-*/
 build-asan/
+
+# Vast.ai outputs
+generated_images/
+resource_metrics/
+vastai_config.json
+prompts.txt
+*.log
