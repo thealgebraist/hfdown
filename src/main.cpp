@@ -92,7 +92,8 @@ int cmd_download_file(const std::string& model_id, const std::string& file, cons
     HuggingFaceClient client(token);
     if (!proto.empty()) client.set_protocol(proto);
     if (!mirror.empty()) { client.use_mirror(true); client.set_mirror_url(mirror); }
-    auto res = client.download_file(model_id, file, file, print_progress);
+    // Download only the specified file: use download_file instead of download_model
+    auto res = client.download_file(model_id, file, ".", print_progress);
     if (!res) { std::cerr << "Error: " << res.error().message << "\n"; return 1; }
     return 0;
 }
