@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <map>
+#include <functional>
 
 #ifdef USE_NGTCP2
 #include <ngtcp2/ngtcp2.h>
@@ -47,6 +48,11 @@ public:
     std::expected<std::string, QuicError> recv_headers();
     std::expected<QuicResponse, QuicError> get_response();
     
+    // Set a callback for streaming data reception
+    using DataCallback = std::function<void(int64_t stream_id, const uint8_t* data, size_t len)>;
+    void set_data_callback(DataCallback cb) { data_callback_ = std::move(cb); }
+    DataCallback data_callback_;
+
 private:
     int udp_fd_;
     bool connected_;

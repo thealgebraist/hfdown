@@ -60,9 +60,14 @@ public:
         http_client_.set_protocol(protocol);
     }
 
+    void use_mirror(bool enable) { use_mirror_ = enable; }
+    void set_mirror_url(const std::string& url) { mirror_url_ = url; }
+
 private:
     std::string token_;
     Http3Client http_client_;
+    bool use_mirror_ = false;
+    std::string mirror_url_ = "https://hf-mirror.com";
     
     std::string get_api_url(const std::string& model_id) const;
     std::string get_file_url(const std::string& model_id, const std::string& filename) const;

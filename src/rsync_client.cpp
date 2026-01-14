@@ -3,7 +3,7 @@
 #include <sstream>
 #include <iostream>
 #include <format>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <array>
 #include <regex>
 #include <cstdlib>
@@ -20,20 +20,22 @@ std::string RsyncClient::calculate_checksum(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) return "";
     
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
     
     std::array<char, 8192> buffer;
     while (file.read(buffer.data(), buffer.size()) || file.gcount() > 0) {
-        SHA256_Update(&ctx, buffer.data(), file.gcount());
+        EVP_DigestUpdate(ctx, buffer.data(), file.gcount());
     }
     
-    std::array<unsigned char, SHA256_DIGEST_LENGTH> hash;
-    SHA256_Final(hash.data(), &ctx);
+    unsigned char hash[32]; // SHA256_DIGEST_LENGTH
+    unsigned int hash_len = 0;
+    EVP_DigestFinal_ex(ctx, hash, &hash_len);
+    EVP_MD_CTX_free(ctx);
     
     std::ostringstream oss;
-    for (unsigned char byte : hash) {
-        oss << std::format("{:02x}", byte);
+    for (unsigned int i = 0; i < hash_len; ++i) {
+        oss << std::format("{:02x}", hash[i]);
     }
     
     return oss.str();

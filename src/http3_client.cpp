@@ -17,43 +17,88 @@ std::expected<void, HttpErrorInfo> Http3Client::download_file(
     const std::string& url,
     const std::filesystem::path& output_path,
     ProgressCallback progress_callback,
-    size_t resume_offset
+    size_t resume_offset,
+    const std::string& expected_checksum,
+    size_t write_offset
 ) {
-    if (forced_protocol_.empty() || forced_protocol_ == "h3") {
-        // For now, HTTP/3 download uses the memory-based get and writes to file.
-        // In a full implementation, this would be streaming.
-        auto result = get(url);
-        if (result && result->protocol == "h3") {
-            std::ofstream file(output_path, std::ios::binary);
-            if (!file) {
-                return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, "Failed to open output file"});
-            }
-            file.write(result->body.data(), result->body.size());
-            return {};
+    auto [host, port] = parse_url(url);
+    bool use_h3 = (forced_protocol_ == "h3");
+    
+    // Check if we already know this host supports H3
+    if (!use_h3 && forced_protocol_.empty()) {
+        static std::mutex cache_mutex;
+        std::lock_guard lock(cache_mutex);
+        if (auto it = protocol_cache_.find(host); it != protocol_cache_.end() && it->second == "h3") {
+            use_h3 = true;
         }
-        if (!forced_protocol_.empty() && !result) return std::unexpected(result.error());
     }
 
-    // Fallback to HTTP/1.1 for large streaming downloads
+    if (use_h3) {
+        auto [host, port] = parse_url(url);
+        std::string path = "/";
+        auto host_start = url.find("://");
+        if (host_start != std::string::npos) host_start += 3; else host_start = 0;
+        auto path_start = url.find('/', host_start);
+        if (path_start != std::string::npos) path = url.substr(path_start);
+
+        QuicSocket socket;
+        auto conn = socket.connect(host, port);
+        if (!conn) {
+            if (forced_protocol_ == "h3") {
+                return std::unexpected(HttpErrorInfo{HttpError::ConnectionFailed, conn.error().message});
+            }
+            goto fallback;
+        }
+
+        std::ofstream file(output_path, std::ios::binary | std::ios::in | std::ios::out);
+        if (!file) {
+            // Fallback if file doesn't exist yet
+            file.open(output_path, std::ios::binary | std::ios::out);
+        }
+        if (!file) return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, "Failed to open output file"});
+        if (write_offset > 0) file.seekp(write_offset);
+
+        size_t downloaded = 0;
+        socket.set_data_callback([&](int64_t, const uint8_t* data, size_t len) {
+            file.write((const char*)data, len);
+            downloaded += len;
+            if (progress_callback) {
+                DownloadProgress p;
+                p.downloaded_bytes = downloaded;
+                p.total_bytes = 0; // Unknown from H3 for now
+                progress_callback(p);
+            }
+        });
+
+        std::vector<std::pair<std::string, std::string>> h3_headers;
+        h3_headers.emplace_back(":method", "GET");
+        h3_headers.emplace_back(":scheme", "https");
+        h3_headers.emplace_back(":authority", host);
+        h3_headers.emplace_back(":path", path);
+        for (const auto& [k, v] : headers_) h3_headers.emplace_back(k, v);
+
+        if (socket.send_headers(h3_headers)) {
+            auto resp = socket.get_response();
+            if (resp && resp->status_code < 400) return {};
+        }
+        if (forced_protocol_ == "h3") return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "H3 download failed"});
+    }
+
+fallback:
+    // Fallback to HTTP/1.1 for streaming (this is memory-efficient)
     for (const auto& [key, value] : headers_) {
         http1_fallback_.set_header(key, value);
     }
     
-    // Discovery during fallback
-    auto [host, port] = parse_url(url);
-    if (auto it = protocol_cache_.find(host); it != protocol_cache_.end() && it->second == "h3") {
-        // If we know it supports H3, we could force it, but here we just proceed with fallback
-    }
-
-    // Capture response to check for Alt-Svc even during file download
-    // (Actual HttpClient::download_file might need update to return headers, 
-    // but for now we rely on the discovery in 'get' which is usually called first for model info)
-    
-    return http1_fallback_.download_file(url, output_path, progress_callback, resume_offset);
+    return http1_fallback_.download_file(url, output_path, progress_callback, resume_offset, expected_checksum, write_offset);
 }
 
 void Http3Client::set_header(const std::string& key, const std::string& value) {
     headers_[key] = value;
+}
+
+void Http3Client::set_config(const HttpConfig& config) {
+    http1_fallback_.set_config(config);
 }
 
 void Http3Client::set_protocol(const std::string& protocol) {
@@ -205,7 +250,7 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::get_with_range(
     size_t start, 
     size_t end
 ) {
-    set_header("Range", std::format("bytes={}-{}", start, end));
+    set_header("Range", std::format("bytes={}- যৌ", start, end));
     return get(url);
 }
 

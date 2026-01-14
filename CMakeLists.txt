@@ -9,6 +9,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBUV REQUIRED libuv)
+set(LIBUV_INCLUDE_DIRS "/opt/homebrew/Cellar/libuv/1.51.0/include")
+set(LIBUV_LIBRARIES "/opt/homebrew/Cellar/libuv/1.51.0/lib/libuv.a")
+
+pkg_check_modules(LIBURING QUIET liburing)
+if(LIBURING_FOUND)
+    add_definitions(-DHAS_IO_URING)
+    message(STATUS "io_uring support enabled")
+endif()
 
 # Optional QUIC (quiche) support
 option(USE_QUIC "Enable QUIC (quiche) support" OFF)
@@ -34,7 +44,6 @@ endif()
 # Optional NGTCP2 support
 option(USE_NGTCP2 "Enable QUIC (ngtcp2 + nghttp3) support" OFF)
 if(USE_NGTCP2)
-    find_package(PkgConfig REQUIRED)
     # Homebrew pkg-config names are libngtcp2 / libngtcp2_crypto_ossl / libnghttp3
     if(NOT DEFINED NGTCP2_ROOT)
         set(NGTCP2_ROOT "/opt/homebrew/Cellar/libngtcp2/1.19.0")
@@ -155,6 +164,7 @@ add_executable(hfdown
     src/git_uploader.cpp
     src/secret_scanner.cpp
     src/quic_socket.cpp
+    src/async_file_writer.cpp
     src/http3_client.cpp
     src/rsync_client.cpp
 )
@@ -162,6 +172,7 @@ add_executable(hfdown
 target_include_directories(hfdown PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${OPENSSL_INCLUDE_DIR}
+    ${LIBUV_INCLUDE_DIRS}
 )
 
 target_link_libraries(hfdown PRIVATE
@@ -169,6 +180,8 @@ target_link_libraries(hfdown PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
     CURL::libcurl
+    ${LIBUV_LIBRARIES}
+    ${LIBURING_LIBRARIES}
 )
 
 # Apply ngtcp2/nghttp3 include/libs to the hfdown target if configured
@@ -200,36 +213,40 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     add_executable(test_http3 test_http3.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
+        src/async_file_writer.cpp
         src/http_client.cpp
     )
-    target_include_directories(test_http3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(test_http3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl)
+    target_include_directories(test_http3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
+    target_link_libraries(test_http3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_http3 PRIVATE USE_NGTCP2)
 
     add_executable(test_http3_range test_http3_range.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
+        src/async_file_writer.cpp
         src/http_client.cpp
     )
-    target_include_directories(test_http3_range PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(test_http3_range PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl)
+    target_include_directories(test_http3_range PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
+    target_link_libraries(test_http3_range PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_http3_range PRIVATE USE_NGTCP2)
 
     add_executable(benchmark_h3_h2 benchmark_h3_h2.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
+        src/async_file_writer.cpp
         src/http_client.cpp
     )
-    target_include_directories(benchmark_h3_h2 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(benchmark_h3_h2 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl)
+    target_include_directories(benchmark_h3_h2 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
+    target_link_libraries(benchmark_h3_h2 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(benchmark_h3_h2 PRIVATE USE_NGTCP2)
 
     add_executable(test_providers_h3 test_providers_h3.cpp
         src/http3_client.cpp
         src/quic_socket.cpp
+        src/async_file_writer.cpp
         src/http_client.cpp
     )
-    target_include_directories(test_providers_h3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(test_providers_h3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl)
+    target_include_directories(test_providers_h3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
+    target_link_libraries(test_providers_h3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_providers_h3 PRIVATE USE_NGTCP2)
 endif()

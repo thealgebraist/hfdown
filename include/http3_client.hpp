@@ -27,10 +27,13 @@ public:
         const std::string& url,
         const std::filesystem::path& output_path,
         ProgressCallback progress_callback = nullptr,
-        size_t resume_offset = 0
+        size_t resume_offset = 0,
+        const std::string& expected_checksum = "",
+        size_t write_offset = 0
     );
     
     void set_header(const std::string& key, const std::string& value);
+    void set_config(const HttpConfig& config);
     
     // Force specific protocol version
     void set_protocol(const std::string& protocol); // "h3", "h2", "http/1.1"

@@ -12,6 +12,7 @@ struct DownloadProgress {
     size_t downloaded_bytes = 0;
     size_t total_bytes = 0;
     double speed_mbps = 0.0;
+    std::string current_checksum; // Current partial checksum
     
     double percentage() const {
         return total_bytes > 0 ? (100.0 * downloaded_bytes / total_bytes) : 0.0;
@@ -64,7 +65,9 @@ public:
         const std::string& url,
         const std::filesystem::path& output_path,
         ProgressCallback progress_callback = nullptr,
-        size_t resume_offset = 0
+        size_t resume_offset = 0,
+        const std::string& expected_checksum = "",
+        size_t write_offset = 0
     );
     
     // GET request returning response body as string

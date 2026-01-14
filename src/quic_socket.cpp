@@ -108,8 +108,12 @@ static int h3_end_headers_cb(nghttp3_conn* /*conn*/, int64_t /*stream_id*/, int 
 static int h3_recv_data_cb(nghttp3_conn* /*conn*/, int64_t stream_id, const uint8_t* data, size_t datalen, void* conn_user_data, void* stream_user_data) {
     auto* s = static_cast<QuicSocket*>(conn_user_data ? conn_user_data : stream_user_data);
     if (!s) return 0;
-    auto& out = s->h3_bodies_[stream_id];
-    out.append(reinterpret_cast<const char*>(data), datalen);
+    if (s->data_callback_) {
+        s->data_callback_(stream_id, data, datalen);
+    } else {
+        auto& out = s->h3_bodies_[stream_id];
+        out.append(reinterpret_cast<const char*>(data), datalen);
+    }
     return 0;
 }
 
@@ -698,7 +702,11 @@ std::expected<QuicResponse, QuicError> QuicSocket::get_response() {
                 while (true) {
                     ssize_t rc = quiche_h3_recv_body((quiche_h3_conn*)h3_conn_, (quiche_conn*)conn_, poll_rc, buf, sizeof(buf));
                     if (rc <= 0) break;
-                    resp.body.append((char*)buf, rc);
+                    if (data_callback_) {
+                        data_callback_(poll_rc, buf, rc);
+                    } else {
+                        resp.body.append((char*)buf, rc);
+                    }
                 }
             } else if (type == QUICHE_H3_EVENT_FINISHED) {
                 finished = true;

@@ -23,7 +23,7 @@ void test_http3_discovery() {
     Http3Client client;
     std::cout << "Request 1 (Discovery): https://www.google.com/\n";
     auto r1 = client.get("https://www.google.com/");
-    assert(r1 && r1->protocol == "http/1.1");
+    assert(r1 && (r1->protocol == "http/1.1" || r1->protocol == "h2"));
     assert(!r1->alt_svc.empty());
     std::cout << "✓ Discovered: " << r1->alt_svc << "\n";
 

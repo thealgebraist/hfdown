@@ -1,0 +1,22 @@
+.PHONY: setup run-benchmark clean
+
+# Configuration
+TEST_DATA_DIR = test_server_data
+PORT = 8888
+
+setup:
+	@echo "Generating test model data..."
+	python3 generate_test_data.py --dir $(TEST_DATA_DIR) --small 100 --large 3
+	@echo "Building hfdown..."
+	cmake --build build --target hfdown
+
+run-benchmark: setup
+	@echo "Starting mock server and running benchmark..."
+	python3 test_server.py $(TEST_DATA_DIR) & SERVER_PID=$$! ; \
+	sleep 2 ; \
+	python3 benchmark_local.py ; \
+	kill $$SERVER_PID
+
+clean:
+	rm -rf $(TEST_DATA_DIR)
+	rm -rf test_download_*
