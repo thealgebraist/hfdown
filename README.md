@@ -311,20 +311,19 @@ HFDown now includes a complete orchestration system for running Flux1 Schnell im
 ### Quick Start
 
 ```bash
-# Create prompts file
-cat > prompts.txt << EOF
-A serene mountain landscape at sunset
-A futuristic city with flying cars
-EOF
+# Run setup script
+./setup_vastai.sh
 
-# Run orchestrator
+# Edit config and prompts, then run
 python3 vastai_flux_orchestrator.py \
   "ssh -p 12345 root@1.2.3.4" \
   prompts.txt \
   --config vastai_config.json
 ```
 
-See [VASTAI_FLUX_README.md](VASTAI_FLUX_README.md) for complete documentation.
+**Documentation:**
+- 📖 [Quick Start Guide](QUICKSTART.md) - Step-by-step walkthrough
+- 📚 [Complete Documentation](VASTAI_FLUX_README.md) - Full reference
 
 ## Future Enhancements
 
