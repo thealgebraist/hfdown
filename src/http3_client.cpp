@@ -250,7 +250,7 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::get_with_range(
     size_t start, 
     size_t end
 ) {
-    set_header("Range", std::format("bytes={}- যৌ", start, end));
+    set_header("Range", std::format("bytes={}-{}", start, end));
     return get(url);
 }
 

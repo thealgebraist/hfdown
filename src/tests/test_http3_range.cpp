@@ -10,7 +10,7 @@ int main() {
     auto result = client.get_with_range("https://www.google.com/", 0, 99);
     
     if (result) {
-        std::cout << "Success! Status: " << result->status_code << "\n";
+        std::cout << "Success! Status: " << result->status_code << " Protocol: " << result->protocol << "\n";
         std::cout << "Body size: " << result->body.size() << " bytes\n";
         if (result->status_code == 206) {
             std::cout << "✓ Partial content received correctly\n";
