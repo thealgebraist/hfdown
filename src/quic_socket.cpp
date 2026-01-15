@@ -493,10 +493,10 @@ std::expected<void, QuicError> QuicSocket::handshake() {
 #ifdef USE_NGTCP2_CRYPTO_OSSL
     SSL_get0_alpn_selected(ng_ssl_, &alpn_val, &alpn_len);
 #elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
-    gnutls_datum_t alpn_gnutls;
-    if (gnutls_alpn_get_selected_protocol(ng_gnutls_session_, &alpn_gnutls) == 0) {
-        alpn_val = alpn_gnutls.data;
-        alpn_len = alpn_gnutls.size;
+    gnutls_datum_t selected_alpn;
+    if (gnutls_alpn_get_selected_protocol(ng_gnutls_session_, &selected_alpn) == 0) {
+        alpn_val = selected_alpn.data;
+        alpn_len = selected_alpn.size;
     }
 #endif
     if (alpn_val) {
