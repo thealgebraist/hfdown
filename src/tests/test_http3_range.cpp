@@ -6,8 +6,13 @@ using namespace hfdown;
 
 int main() {
     Http3Client client;
-    // Request first 100 bytes of Google
-    auto result = client.get_with_range("https://www.google.com/", 0, 99);
+    const std::string url = "https://www.cloudflare.com/img/logo-cloudflare-dark.svg";
+    
+    std::cout << "Request 1 (Discovery)...\n";
+    client.get(url);
+
+    std::cout << "Request 2 (Range via Cache)...\n";
+    auto result = client.get_with_range(url, 0, 99);
     
     if (result) {
         std::cout << "Success! Status: " << result->status_code << " Protocol: " << result->protocol << "\n";

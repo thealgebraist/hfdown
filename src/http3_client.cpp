@@ -250,8 +250,12 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::get_with_range(
     size_t start, 
     size_t end
 ) {
-    set_header("Range", std::format("bytes={}-{}", start, end));
-    return get(url);
+    std::string range_val = std::format("bytes={}-{}", start, end);
+    set_header("Range", range_val);
+    auto res = get(url);
+    // Important: remove range header so subsequent requests aren't affected
+    headers_.erase("Range");
+    return res;
 }
 
 } // namespace hfdown
