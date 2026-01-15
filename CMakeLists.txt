@@ -67,7 +67,23 @@ if(USE_NGTCP2)
     # Try pkg-config first
     pkg_check_modules(NGTCP2 libngtcp2)
     pkg_check_modules(NGHTTP3 libnghttp3)
-    pkg_check_modules(NGTCP2_CRYPTO libngtcp2_crypto_ossl)
+    pkg_check_modules(NGTCP2_CRYPTO_OSSL libngtcp2_crypto_ossl)
+    pkg_check_modules(NGTCP2_CRYPTO_GNUTLS libngtcp2_crypto_gnutls)
+
+    if(NGTCP2_CRYPTO_OSSL_FOUND)
+        set(NGTCP2_CRYPTO_FOUND TRUE)
+        set(NGTCP2_CRYPTO_INCLUDE_DIRS ${NGTCP2_CRYPTO_OSSL_INCLUDE_DIRS})
+        set(NGTCP2_CRYPTO_LIBRARIES ${NGTCP2_CRYPTO_OSSL_LIBRARIES})
+        add_definitions(-DUSE_NGTCP2_CRYPTO_OSSL)
+    elseif(NGTCP2_CRYPTO_GNUTLS_FOUND)
+        set(NGTCP2_CRYPTO_FOUND TRUE)
+        set(NGTCP2_CRYPTO_INCLUDE_DIRS ${NGTCP2_CRYPTO_GNUTLS_INCLUDE_DIRS})
+        set(NGTCP2_CRYPTO_LIBRARIES ${NGTCP2_CRYPTO_GNUTLS_LIBRARIES})
+        add_definitions(-DUSE_NGTCP2_CRYPTO_GNUTLS)
+        find_package(GnuTLS REQUIRED)
+        list(APPEND NGTCP2_CRYPTO_INCLUDE_DIRS ${GNUTLS_INCLUDE_DIR})
+        list(APPEND NGTCP2_CRYPTO_LIBRARIES ${GNUTLS_LIBRARIES})
+    endif()
 
     # Fallback search paths
     set(NGTCP2_SEARCH_PATHS

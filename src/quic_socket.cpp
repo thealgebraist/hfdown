@@ -10,11 +10,17 @@
 #ifdef USE_NGTCP2
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
+#ifdef USE_NGTCP2_CRYPTO_OSSL
 #include <ngtcp2/ngtcp2_crypto_ossl.h>
-#include <nghttp3/nghttp3.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+#include <ngtcp2/ngtcp2_crypto_gnutls.h>
+#include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
+#endif
+#include <nghttp3/nghttp3.h>
 #include <sys/select.h>
 #endif
 
@@ -32,14 +38,24 @@ static ngtcp2_conn* get_ngtcp2_conn_from_ref(ngtcp2_crypto_conn_ref* conn_ref) {
 }
 
 static void rand_cb(uint8_t* dest, size_t destlen, const ngtcp2_rand_ctx*) {
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     (void)RAND_bytes(dest, (int)destlen);
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    (void)gnutls_rnd(GNUTLS_RND_RANDOM, dest, destlen);
+#endif
 }
 
 static int get_new_connection_id_cb(ngtcp2_conn*, ngtcp2_cid* cid, uint8_t* token, size_t cidlen, void*) {
     std::vector<uint8_t> data(cidlen);
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     if (RAND_bytes(data.data(), (int)data.size()) != 1) return NGTCP2_ERR_CALLBACK_FAILURE;
     ngtcp2_cid_init(cid, data.data(), data.size());
     if (RAND_bytes(token, (int)NGTCP2_STATELESS_RESET_TOKENLEN) != 1) return NGTCP2_ERR_CALLBACK_FAILURE;
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    if (gnutls_rnd(GNUTLS_RND_RANDOM, data.data(), data.size()) != 0) return NGTCP2_ERR_CALLBACK_FAILURE;
+    ngtcp2_cid_init(cid, data.data(), data.size());
+    if (gnutls_rnd(GNUTLS_RND_RANDOM, token, NGTCP2_STATELESS_RESET_TOKENLEN) != 0) return NGTCP2_ERR_CALLBACK_FAILURE;
+#endif
     return 0;
 }
 
@@ -157,6 +173,7 @@ void QuicSocket::close() {
         nghttp3_qpack_decoder_del(ng_qpack_decoder_);
         ng_qpack_decoder_ = nullptr;
     }
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     if (ng_crypto_ctx_) {
         ngtcp2_crypto_ossl_ctx_del(reinterpret_cast<ngtcp2_crypto_ossl_ctx*>(ng_crypto_ctx_));
         ng_crypto_ctx_ = nullptr;
@@ -170,6 +187,20 @@ void QuicSocket::close() {
         SSL_CTX_free(ng_ssl_ctx_);
         ng_ssl_ctx_ = nullptr;
     }
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    if (ng_crypto_ctx_) {
+        ngtcp2_crypto_gnutls_ctx_del(reinterpret_cast<ngtcp2_crypto_gnutls_ctx*>(ng_crypto_ctx_));
+        ng_crypto_ctx_ = nullptr;
+    }
+    if (ng_gnutls_session_) {
+        gnutls_deinit(ng_gnutls_session_);
+        ng_gnutls_session_ = nullptr;
+    }
+    if (ng_gnutls_cred_) {
+        gnutls_certificate_free_credentials(ng_gnutls_cred_);
+        ng_gnutls_cred_ = nullptr;
+    }
+#endif
 #endif
 }
 
@@ -213,6 +244,7 @@ std::expected<void, QuicError> QuicSocket::connect(const std::string& host, uint
 std::expected<void, QuicError> QuicSocket::init_quic() {
     // Initialize QUIC backend: prefer ngtcp2 -> fallback
 #if defined(USE_NGTCP2)
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     if (ngtcp2_crypto_ossl_init() != 0) {
         return std::unexpected(QuicError{"ngtcp2_crypto_ossl_init failed", 0});
     }
@@ -239,6 +271,29 @@ std::expected<void, QuicError> QuicSocket::init_quic() {
         ng_ssl_ctx_ = nullptr;
         return std::unexpected(QuicError{"ngtcp2_crypto_ossl_ctx_new failed", 0});
     }
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    if (ngtcp2_crypto_gnutls_init() != 0) {
+        return std::unexpected(QuicError{"ngtcp2_crypto_gnutls_init failed", 0});
+    }
+
+    if (gnutls_certificate_allocate_credentials(&ng_gnutls_cred_) != 0) {
+        return std::unexpected(QuicError{"gnutls_certificate_allocate_credentials failed", 0});
+    }
+
+    if (gnutls_init(&ng_gnutls_session_, GNUTLS_CLIENT) != 0) {
+        gnutls_certificate_free_credentials(ng_gnutls_cred_);
+        ng_gnutls_cred_ = nullptr;
+        return std::unexpected(QuicError{"gnutls_init failed", 0});
+    }
+
+    if (ngtcp2_crypto_gnutls_ctx_new(reinterpret_cast<ngtcp2_crypto_gnutls_ctx**>(&ng_crypto_ctx_), ng_gnutls_session_) != 0) {
+        gnutls_deinit(ng_gnutls_session_);
+        ng_gnutls_session_ = nullptr;
+        gnutls_certificate_free_credentials(ng_gnutls_cred_);
+        ng_gnutls_cred_ = nullptr;
+        return std::unexpected(QuicError{"ngtcp2_crypto_gnutls_ctx_new failed", 0});
+    }
+#endif
 
     // ngtcp2_conn and nghttp3_conn will be created in handshake
     ng_conn_ = nullptr;
@@ -254,6 +309,7 @@ std::expected<void, QuicError> QuicSocket::init_quic() {
 std::expected<void, QuicError> QuicSocket::handshake() {
     // Handshake depending on chosen backend
 #if defined(USE_NGTCP2)
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     if (!ng_crypto_ctx_ || !ng_ssl_ || !ng_ssl_ctx_) {
         return std::unexpected(QuicError{"ngtcp2 TLS not initialized", 0});
     }
@@ -272,6 +328,36 @@ std::expected<void, QuicError> QuicSocket::handshake() {
     if (ngtcp2_crypto_ossl_configure_client_session(ng_ssl_) != 0) {
         return std::unexpected(QuicError{"ngtcp2_crypto_ossl_configure_client_session failed", 0});
     }
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    if (!ng_crypto_ctx_ || !ng_gnutls_session_) {
+        return std::unexpected(QuicError{"ngtcp2 GnuTLS not initialized", 0});
+    }
+
+    if (gnutls_set_default_priority(ng_gnutls_session_) != 0) {
+        return std::unexpected(QuicError{"gnutls_set_default_priority failed", 0});
+    }
+
+    gnutls_datum_t alpn_gnutls[] = {{(uint8_t*)"h3", 2}};
+    if (gnutls_alpn_set_protocols(ng_gnutls_session_, alpn_gnutls, 1, 0) != 0) {
+        return std::unexpected(QuicError{"gnutls_alpn_set_protocols failed", 0});
+    }
+
+    if (gnutls_server_name_set(ng_gnutls_session_, GNUTLS_NAME_DNS, peer_host_.c_str(), peer_host_.size()) != 0) {
+        return std::unexpected(QuicError{"gnutls_server_name_set failed", 0});
+    }
+
+    if (gnutls_credentials_set(ng_gnutls_session_, GNUTLS_CRD_CERTIFICATE, ng_gnutls_cred_) != 0) {
+        return std::unexpected(QuicError{"gnutls_credentials_set failed", 0});
+    }
+
+    ng_conn_ref_.get_conn = get_ngtcp2_conn_from_ref;
+    ng_conn_ref_.user_data = this;
+    gnutls_session_set_ptr(ng_gnutls_session_, &ng_conn_ref_);
+
+    if (ngtcp2_crypto_gnutls_configure_client_session(ng_gnutls_session_) != 0) {
+        return std::unexpected(QuicError{"ngtcp2_crypto_gnutls_configure_client_session failed", 0});
+    }
+#endif
 
     // Generate random DCID/SCID
     uint8_t dcidbuf[16];
@@ -600,7 +686,8 @@ std::expected<size_t, QuicError> QuicSocket::send(std::span<const char> data) {
         return std::unexpected(QuicError{"Not connected", 0});
     }
 #if defined(USE_NGTCP2)
-    // Minimal ngtcp2 skeleton: send via UDP as a placeholder
+    // For real H3 we should use drive() and stream APIs, 
+    // but this fallback/placeholder is kept for now.
     ssize_t sent = ::send(udp_fd_, data.data(), data.size(), 0);
     if (sent < 0) return std::unexpected(QuicError{"Send failed", errno});
     return static_cast<size_t>(sent);

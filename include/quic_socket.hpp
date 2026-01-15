@@ -12,9 +12,14 @@
 #ifdef USE_NGTCP2
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
+#ifdef USE_NGTCP2_CRYPTO_OSSL
 #include <ngtcp2/ngtcp2_crypto_ossl.h>
-#include <nghttp3/nghttp3.h>
 #include <openssl/ssl.h>
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+#include <ngtcp2/ngtcp2_crypto_gnutls.h>
+#include <gnutls/gnutls.h>
+#endif
+#include <nghttp3/nghttp3.h>
 #endif
 
 namespace hfdown {
@@ -71,10 +76,16 @@ public:
 private:
     uint64_t ng_stream_id_ = 0;
     ::ngtcp2_crypto_conn_ref ng_conn_ref_{};
-    // ngtcp2 OpenSSL glue (use global-qualified types)
+    // ngtcp2 crypto glue
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     ::ngtcp2_crypto_ossl_ctx* ng_crypto_ctx_ = nullptr;
     ::SSL_CTX* ng_ssl_ctx_ = nullptr;
     ::SSL* ng_ssl_ = nullptr;
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    void* ng_crypto_ctx_ = nullptr; // ngtcp2_crypto_gnutls_ctx
+    ::gnutls_session_t ng_gnutls_session_ = nullptr;
+    ::gnutls_certificate_credentials_t ng_gnutls_cred_ = nullptr;
+#endif
 #endif
     std::vector<char> recv_buffer_;
     struct sockaddr_storage peer_addr_;
