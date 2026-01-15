@@ -82,7 +82,6 @@ private:
     ::SSL_CTX* ng_ssl_ctx_ = nullptr;
     ::SSL* ng_ssl_ = nullptr;
 #elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
-    void* ng_crypto_ctx_ = nullptr; // ngtcp2_crypto_gnutls_ctx
     ::gnutls_session_t ng_gnutls_session_ = nullptr;
     ::gnutls_certificate_credentials_t ng_gnutls_cred_ = nullptr;
 #endif

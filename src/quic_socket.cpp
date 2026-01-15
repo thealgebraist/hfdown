@@ -286,14 +286,6 @@ std::expected<void, QuicError> QuicSocket::init_quic() {
         ng_gnutls_cred_ = nullptr;
         return std::unexpected(QuicError{"gnutls_init failed", 0});
     }
-
-    if (ngtcp2_crypto_gnutls_ctx_new(reinterpret_cast<ngtcp2_crypto_gnutls_ctx**>(&ng_crypto_ctx_), ng_gnutls_session_) != 0) {
-        gnutls_deinit(ng_gnutls_session_);
-        ng_gnutls_session_ = nullptr;
-        gnutls_certificate_free_credentials(ng_gnutls_cred_);
-        ng_gnutls_cred_ = nullptr;
-        return std::unexpected(QuicError{"ngtcp2_crypto_gnutls_ctx_new failed", 0});
-    }
 #endif
 
     // ngtcp2_conn and nghttp3_conn will be created in handshake
@@ -429,7 +421,11 @@ std::expected<void, QuicError> QuicSocket::handshake() {
         return std::unexpected(QuicError{"ngtcp2_conn_client_new failed", rv});
     }
 
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     ngtcp2_conn_set_tls_native_handle(ng_conn_, ng_crypto_ctx_);
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    ngtcp2_conn_set_tls_native_handle(ng_conn_, ng_gnutls_session_);
+#endif
 
     // nghttp3 callbacks/settings
     nghttp3_callbacks h3_callbacks;
