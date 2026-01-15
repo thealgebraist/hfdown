@@ -6,6 +6,7 @@
 #include <format>
 #include <iostream>
 #include <cerrno>
+#include <chrono>
 
 #ifdef USE_NGTCP2
 #include <ngtcp2/ngtcp2.h>
@@ -751,9 +752,9 @@ std::expected<void, QuicError> QuicSocket::send_headers(
     }
     for (size_t i = 0; i < names.size(); ++i) {
         nva.push_back({
-            .name = reinterpret_cast<const uint8_t*>(names[i].data()),
+            .name = (uint8_t*)names[i].data(),
+            .value = (uint8_t*)values[i].data(),
             .namelen = names[i].size(),
-            .value = reinterpret_cast<const uint8_t*>(values[i].data()),
             .valuelen = values[i].size(),
             .flags = NGHTTP3_NV_FLAG_NONE
         });
