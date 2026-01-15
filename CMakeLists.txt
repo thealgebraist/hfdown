@@ -64,107 +64,51 @@ endif()
 # Optional NGTCP2 support
 option(USE_NGTCP2 "Enable QUIC (ngtcp2 + nghttp3) support" OFF)
 if(USE_NGTCP2)
-    # Homebrew pkg-config names are libngtcp2 / libngtcp2_crypto_ossl / libnghttp3
-    if(NOT DEFINED NGTCP2_ROOT)
-        set(NGTCP2_ROOT "/opt/homebrew/Cellar/libngtcp2/1.19.0")
-    endif()
-    if(NOT DEFINED NGHTTP3_ROOT)
-        set(NGHTTP3_ROOT "/opt/homebrew/Cellar/libnghttp3/1.14.0")
-    endif()
+    # Try pkg-config first
     pkg_check_modules(NGTCP2 QUIET libngtcp2)
     pkg_check_modules(NGHTTP3 QUIET libnghttp3)
     pkg_check_modules(NGTCP2_CRYPTO QUIET libngtcp2_crypto_ossl)
 
-    # If pkg-config didn't find them, try Homebrew Cellar defaults
+    # Fallback search paths
+    set(NGTCP2_SEARCH_PATHS
+        ${NGTCP2_ROOT}
+        /opt/homebrew
+        /usr/local
+        /usr
+    )
+
     if(NOT NGTCP2_FOUND)
-        if(NOT DEFINED NGTCP2_ROOT)
-            set(NGTCP2_ROOT "/opt/homebrew/Cellar/libngtcp2/1.19.0")
-        endif()
-        set(NGTCP2_INCLUDE_DIRS ${NGTCP2_ROOT}/include)
-        if(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2.a)
-            set(NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2.a)
-        elseif(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2.dylib)
-            set(NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2.dylib)
-        endif()
+        find_path(NGTCP2_INCLUDE_DIRS NAMES ngtcp2/ngtcp2.h PATHS ${NGTCP2_SEARCH_PATHS} PATH_SUFFIXES include)
+        find_library(NGTCP2_LIBRARIES NAMES ngtcp2 PATHS ${NGTCP2_SEARCH_PATHS} PATH_SUFFIXES lib)
     endif()
 
     if(NOT NGHTTP3_FOUND)
-        if(NOT DEFINED NGHTTP3_ROOT)
-            set(NGHTTP3_ROOT "/opt/homebrew/Cellar/libnghttp3/1.14.0")
-        endif()
-        set(NGHTTP3_INCLUDE_DIRS ${NGHTTP3_ROOT}/include)
-        if(EXISTS ${NGHTTP3_ROOT}/lib/libnghttp3.a)
-            set(NGHTTP3_LIBRARIES ${NGHTTP3_ROOT}/lib/libnghttp3.a)
-        elseif(EXISTS ${NGHTTP3_ROOT}/lib/libnghttp3.dylib)
-            set(NGHTTP3_LIBRARIES ${NGHTTP3_ROOT}/lib/libnghttp3.dylib)
-        endif()
+        find_path(NGHTTP3_INCLUDE_DIRS NAMES nghttp3/nghttp3.h PATHS ${NGTCP2_SEARCH_PATHS} PATH_SUFFIXES include)
+        find_library(NGHTTP3_LIBRARIES NAMES nghttp3 PATHS ${NGTCP2_SEARCH_PATHS} PATH_SUFFIXES lib)
     endif()
 
-    # Prefer the crypto helper pkg-config if present (provides openssl glue)
-    if(NGTCP2_CRYPTO_FOUND)
-        set(NGTCP2_INCLUDE_DIRS ${NGTCP2_CRYPTO_INCLUDE_DIRS})
-        # Prepend crypto helper libs (pkg-config provides -L/path -l...) and keep core ngtcp2 libs
-        set(NGTCP2_LIBRARIES "${NGTCP2_CRYPTO_LIBRARIES} ${NGTCP2_LIBRARIES}")
-        message(STATUS "Using libngtcp2_crypto_ossl for TLS helper")
-    else()
-        # Try to find a prebuilt helper in the Cellar
-        if(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.a)
-            list(APPEND NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.a)
-        elseif(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.dylib)
-            list(APPEND NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.dylib)
-        endif()
+    if(NOT NGTCP2_CRYPTO_FOUND)
+        find_path(NGTCP2_CRYPTO_INCLUDE_DIRS NAMES ngtcp2/ngtcp2_crypto.h PATHS ${NGTCP2_SEARCH_PATHS} PATH_SUFFIXES include)
+        find_library(NGTCP2_CRYPTO_LIBRARIES NAMES ngtcp2_crypto_ossl PATHS ${NGTCP2_SEARCH_PATHS} PATH_SUFFIXES lib)
     endif()
 
-    # Also append explicit Cellar library paths if present to avoid linker -l resolution issues
-    if(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2.a)
-        set(NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2.a)
-    elseif(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2.dylib)
-        set(NGTCP2_LIBRARIES ${NGTCP2_ROOT}/lib/libngtcp2.dylib)
+    # Consolidate include directories
+    set(NGTCP2_ALL_INCLUDE_DIRS ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${NGTCP2_CRYPTO_INCLUDE_DIRS})
+    if(NGTCP2_ALL_INCLUDE_DIRS)
+        list(REMOVE_DUPLICATES NGTCP2_ALL_INCLUDE_DIRS)
     endif()
-    if(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.a)
-        set(NGTCP2_CRYPTO_LIB ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.a)
-        list(APPEND NGTCP2_LIBRARIES ${NGTCP2_CRYPTO_LIB})
-    elseif(EXISTS ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.dylib)
-        set(NGTCP2_CRYPTO_LIB ${NGTCP2_ROOT}/lib/libngtcp2_crypto_ossl.dylib)
-        list(APPEND NGTCP2_LIBRARIES ${NGTCP2_CRYPTO_LIB})
-    endif()
-    if(EXISTS ${NGHTTP3_ROOT}/lib/libnghttp3.a)
-        set(NGHTTP3_LIBRARIES ${NGHTTP3_ROOT}/lib/libnghttp3.a)
-    elseif(EXISTS ${NGHTTP3_ROOT}/lib/libnghttp3.dylib)
-        set(NGHTTP3_LIBRARIES ${NGHTTP3_ROOT}/lib/libnghttp3.dylib)
-    endif()
-    message(STATUS "NGTCP2_LIBRARIES='${NGTCP2_LIBRARIES}'")
-    message(STATUS "NGHTTP3_LIBRARIES='${NGHTTP3_LIBRARIES}'")
 
-    # Filter out bare library names from pkg-config output (e.g. 'ngtcp2')
-    set(_filtered_ngtcp2)
-    foreach(_lib ${NGTCP2_LIBRARIES})
-        if(_lib MATCHES "^-" OR _lib MATCHES "/")
-            list(APPEND _filtered_ngtcp2 ${_lib})
-        else()
-            message(STATUS "Dropping bare lib token from NGTCP2_LIBRARIES: ${_lib}")
-        endif()
-    endforeach()
-    set(NGTCP2_LIBRARIES ${_filtered_ngtcp2})
+    # Consolidate libraries
+    set(NGTCP2_ALL_LIBRARIES ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${NGTCP2_CRYPTO_LIBRARIES})
 
-    set(_filtered_nghttp3)
-    foreach(_lib ${NGHTTP3_LIBRARIES})
-        if(_lib MATCHES "^-" OR _lib MATCHES "/")
-            list(APPEND _filtered_nghttp3 ${_lib})
-        else()
-            message(STATUS "Dropping bare lib token from NGHTTP3_LIBRARIES: ${_lib}")
-        endif()
-    endforeach()
-    set(NGHTTP3_LIBRARIES ${_filtered_nghttp3})
-
-    if( (NOT NGTCP2_FOUND AND (NOT DEFINED NGTCP2_LIBRARIES OR NGTCP2_LIBRARIES STREQUAL "")) OR (NOT NGHTTP3_FOUND AND (NOT DEFINED NGHTTP3_LIBRARIES OR NGHTTP3_LIBRARIES STREQUAL "")) )
-        message(FATAL_ERROR "ngtcp2/nghttp3 not found. Install libngtcp2 and libnghttp3 or set NGTCP2_ROOT/NGHTTP3_ROOT.")
+    if(NOT NGTCP2_INCLUDE_DIRS OR NOT NGTCP2_LIBRARIES)
+        message(FATAL_ERROR "ngtcp2/nghttp3 not found. Install libngtcp2 and libnghttp3 or set NGTCP2_ROOT.")
     endif()
 
     set(NGTCP2_CONFIGURED TRUE)
     message(STATUS "QUIC (ngtcp2/nghttp3) available")
-else()
-    message(STATUS "QUIC (ngtcp2) disabled. Build with -DUSE_NGTCP2=ON after installing ngtcp2/nghttp3")
+    message(STATUS "NGTCP2 Include Dirs: ${NGTCP2_ALL_INCLUDE_DIRS}")
+    message(STATUS "NGTCP2 Libraries: ${NGTCP2_ALL_LIBRARIES}")
 endif()
 # On macOS with Homebrew, CMake may not find OpenSSL automatically.
 if(NOT OPENSSL_FOUND)
@@ -203,8 +147,8 @@ target_link_libraries(hfdown PRIVATE
 
 # Apply ngtcp2/nghttp3 include/libs to the hfdown target if configured
 if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
-    target_include_directories(hfdown PRIVATE ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS})
-    target_link_libraries(hfdown PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES})
+    target_include_directories(hfdown PRIVATE ${NGTCP2_ALL_INCLUDE_DIRS})
+    target_link_libraries(hfdown PRIVATE ${NGTCP2_ALL_LIBRARIES})
     target_compile_definitions(hfdown PRIVATE USE_NGTCP2)
     message(STATUS "QUIC (ngtcp2/nghttp3) enabled for target hfdown")
 endif()
@@ -224,8 +168,8 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
         src/async_file_writer.cpp
         src/http_client.cpp
     )
-    target_include_directories(test_http3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
-    target_link_libraries(test_http3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
+    target_include_directories(test_http3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_ALL_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
+    target_link_libraries(test_http3 PRIVATE ${NGTCP2_ALL_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_http3 PRIVATE USE_NGTCP2)
 
     add_executable(test_http3_range src/tests/test_http3_range.cpp
@@ -234,8 +178,8 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
         src/async_file_writer.cpp
         src/http_client.cpp
     )
-    target_include_directories(test_http3_range PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
-    target_link_libraries(test_http3_range PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
+    target_include_directories(test_http3_range PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_ALL_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
+    target_link_libraries(test_http3_range PRIVATE ${NGTCP2_ALL_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_http3_range PRIVATE USE_NGTCP2)
 
     add_executable(benchmark_h3_h2 src/tests/benchmark_h3_h2.cpp
@@ -244,8 +188,8 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
         src/async_file_writer.cpp
         src/http_client.cpp
     )
-    target_include_directories(benchmark_h3_h2 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
-    target_link_libraries(benchmark_h3_h2 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
+    target_include_directories(benchmark_h3_h2 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_ALL_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
+    target_link_libraries(benchmark_h3_h2 PRIVATE ${NGTCP2_ALL_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(benchmark_h3_h2 PRIVATE USE_NGTCP2)
 
     add_executable(test_providers_h3 src/tests/test_providers_h3.cpp
@@ -254,7 +198,7 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
         src/async_file_writer.cpp
         src/http_client.cpp
     )
-    target_include_directories(test_providers_h3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
-    target_link_libraries(test_providers_h3 PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
+    target_include_directories(test_providers_h3 PRIVATE ${CMAKE_SOURCE_DIR}/include ${NGTCP2_ALL_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LIBUV_INCLUDE_DIRS})
+    target_link_libraries(test_providers_h3 PRIVATE ${NGTCP2_ALL_LIBRARIES} ${OPENSSL_LIBRARIES} CURL::libcurl ${LIBUV_LIBRARIES} ${LIBURING_LIBRARIES})
     target_compile_definitions(test_providers_h3 PRIVATE USE_NGTCP2)
 endif()
