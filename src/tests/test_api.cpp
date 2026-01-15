@@ -3,7 +3,7 @@
 
 int main() {
     hfdown::HttpClient client;
-    auto result = client.get("https://huggingface.co/api/models/sshleifer/tiny-gpt2/tree/main");
+    auto result = client.get("https://huggingface.co/api/models/sshleifer/tiny-gpt2/tree/main?recursive=true");
     
     if (result) {
         std::cout << "Success! Length: " << result->length() << " bytes\n";

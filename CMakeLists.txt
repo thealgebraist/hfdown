@@ -61,27 +61,6 @@ if(LIBUV_FOUND AND (NOT LIBUV_LIBRARIES MATCHES "/"))
     endif()
 endif()
 
-# Optional QUIC (quiche) support
-option(USE_QUIC "Enable QUIC (quiche) support" OFF)
-if(USE_QUIC)
-    if(NOT DEFINED QUICHE_ROOT)
-        # Default to Homebrew quiche if available
-        set(QUICHE_ROOT "/opt/homebrew/Cellar/cloudflare-quiche/0.24.7")
-    endif()
-    if(NOT DEFINED QUICHE_INCLUDE_DIR)
-        set(QUICHE_INCLUDE_DIR ${QUICHE_ROOT}/include)
-    endif()
-    if(NOT DEFINED QUICHE_LIB)
-        set(QUICHE_LIB ${QUICHE_ROOT}/lib/libquiche.a)
-    endif()
-    if(NOT EXISTS ${QUICHE_INCLUDE_DIR})
-        message(FATAL_ERROR "quiche include dir not found: ${QUICHE_INCLUDE_DIR}")
-    endif()
-    if(NOT EXISTS ${QUICHE_LIB})
-        message(FATAL_ERROR "quiche lib not found: ${QUICHE_LIB}")
-    endif()
-endif()
-
 # Optional NGTCP2 support
 option(USE_NGTCP2 "Enable QUIC (ngtcp2 + nghttp3) support" OFF)
 if(USE_NGTCP2)
@@ -228,15 +207,6 @@ if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     target_link_libraries(hfdown PRIVATE ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES})
     target_compile_definitions(hfdown PRIVATE USE_NGTCP2)
     message(STATUS "QUIC (ngtcp2/nghttp3) enabled for target hfdown")
-endif()
-
-if(USE_QUIC)
-    target_include_directories(hfdown PRIVATE ${QUICHE_INCLUDE_DIR})
-    target_link_libraries(hfdown PRIVATE ${QUICHE_LIB})
-    target_compile_definitions(hfdown PRIVATE USE_QUIC)
-    message(STATUS "QUIC (quiche) enabled. Include: ${QUICHE_INCLUDE_DIR}, Lib: ${QUICHE_LIB}")
-else()
-    message(STATUS "QUIC (quiche) disabled. Build with -DUSE_QUIC=ON -DQUICHE_ROOT=... to enable")
 endif()
 
 # Compiler warnings
