@@ -75,7 +75,7 @@ static int version_negotiation_cb(ngtcp2_conn* /*conn*/, uint32_t version, const
     return 0;
 }
 
-static int acked_stream_data_offset_cb(ngtcp2_conn* /*conn*/, int64_t stream_id, uint64_t offset, uint64_t datalen, void* user_data, void*) {
+static int acked_stream_data_offset_cb(ngtcp2_conn* /*conn*/, int64_t stream_id, uint64_t /*offset*/, uint64_t datalen, void* user_data, void*) {
     auto* s = static_cast<QuicSocket*>(user_data);
     if (!s || !s->ng_h3conn_) return 0;
     // Inform nghttp3 that underlying QUIC has acknowledged |datalen| bytes at |offset|
@@ -142,7 +142,7 @@ static int h3_end_stream_cb(nghttp3_conn* /*conn*/, int64_t stream_id, void* con
 namespace hfdown {
 
 QuicSocket::QuicSocket() 
-    : udp_fd_(-1), connected_(false), quic_conn_(nullptr), quic_stream_(nullptr) {
+    : udp_fd_(-1), connected_(false) {
     recv_buffer_.reserve(65536);
 }
 

@@ -61,8 +61,6 @@ public:
 private:
     int udp_fd_;
     bool connected_;
-    void* quic_conn_;  // Opaque pointer to QUIC connection
-    void* quic_stream_; // Opaque pointer to QUIC stream (for H3)
 #ifdef USE_NGTCP2
 public:
     // ngtcp2/nghttp3 session state (public for callbacks)

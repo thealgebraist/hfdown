@@ -109,7 +109,7 @@ int cmd_h3_test(const std::string& url, const std::string& proto) {
 
 int main(int argc, char** argv) {
     FSMState state = FSMState::Init;
-    FSMContext ctx{argc, argv};
+    FSMContext ctx{.argc = argc, .argv = argv};
     while (state != FSMState::Done) {
         switch (state) {
             case FSMState::Init:
