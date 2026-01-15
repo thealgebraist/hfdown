@@ -65,13 +65,14 @@ endif()
 option(USE_NGTCP2 "Enable QUIC (ngtcp2 + nghttp3) support" OFF)
 if(USE_NGTCP2)
     # Try pkg-config first
-    pkg_check_modules(NGTCP2 QUIET libngtcp2)
-    pkg_check_modules(NGHTTP3 QUIET libnghttp3)
-    pkg_check_modules(NGTCP2_CRYPTO QUIET libngtcp2_crypto_ossl)
+    pkg_check_modules(NGTCP2 libngtcp2)
+    pkg_check_modules(NGHTTP3 libnghttp3)
+    pkg_check_modules(NGTCP2_CRYPTO libngtcp2_crypto_ossl)
 
     # Fallback search paths
     set(NGTCP2_SEARCH_PATHS
         ${NGTCP2_ROOT}
+        ${NGTCP2_INCLUDE_DIR}/..
         /opt/homebrew
         /usr/local
         /usr
@@ -92,8 +93,13 @@ if(USE_NGTCP2)
         find_library(NGTCP2_CRYPTO_LIBRARIES NAMES ngtcp2_crypto_ossl PATHS ${NGTCP2_SEARCH_PATHS} PATH_SUFFIXES lib)
     endif()
 
-    # Consolidate include directories
-    set(NGTCP2_ALL_INCLUDE_DIRS ${NGTCP2_INCLUDE_DIRS} ${NGHTTP3_INCLUDE_DIRS} ${NGTCP2_CRYPTO_INCLUDE_DIRS})
+    # Consolidate include directories - very important for Linux if headers are split
+    set(NGTCP2_ALL_INCLUDE_DIRS 
+        ${NGTCP2_INCLUDE_DIRS} 
+        ${NGHTTP3_INCLUDE_DIRS} 
+        ${NGTCP2_CRYPTO_INCLUDE_DIRS}
+        ${NGTCP2_ROOT}/include
+    )
     if(NGTCP2_ALL_INCLUDE_DIRS)
         list(REMOVE_DUPLICATES NGTCP2_ALL_INCLUDE_DIRS)
     endif()
@@ -101,14 +107,13 @@ if(USE_NGTCP2)
     # Consolidate libraries
     set(NGTCP2_ALL_LIBRARIES ${NGTCP2_LIBRARIES} ${NGHTTP3_LIBRARIES} ${NGTCP2_CRYPTO_LIBRARIES})
 
-    if(NOT NGTCP2_INCLUDE_DIRS OR NOT NGTCP2_LIBRARIES)
-        message(FATAL_ERROR "ngtcp2/nghttp3 not found. Install libngtcp2 and libnghttp3 or set NGTCP2_ROOT.")
+    if(NOT NGTCP2_INCLUDE_DIRS AND NOT NGTCP2_FOUND)
+        message(FATAL_ERROR "ngtcp2 headers not found. Set NGTCP2_ROOT or install libngtcp2-dev.")
     endif()
 
     set(NGTCP2_CONFIGURED TRUE)
     message(STATUS "QUIC (ngtcp2/nghttp3) available")
     message(STATUS "NGTCP2 Include Dirs: ${NGTCP2_ALL_INCLUDE_DIRS}")
-    message(STATUS "NGTCP2 Libraries: ${NGTCP2_ALL_LIBRARIES}")
 endif()
 # On macOS with Homebrew, CMake may not find OpenSSL automatically.
 if(NOT OPENSSL_FOUND)
