@@ -25,7 +25,7 @@ HuggingFaceClient::HuggingFaceClient(std::string token)
 
 std::string HuggingFaceClient::get_api_url(const std::string& model_id) const {
     std::string base = use_mirror_ ? mirror_url_ : "https://huggingface.co";
-    return std::format("{}/api/models/{}/tree/main", base, model_id);
+    return std::format("{}/api/models/{}/tree/main?recursive=true", base, model_id);
 }
 
 std::string HuggingFaceClient::get_file_url(const std::string& model_id, 
@@ -75,9 +75,9 @@ std::expected<ModelInfo, HFErrorInfo> HuggingFaceClient::get_model_info(
                             file.size = 0;
                         }
                         
-                        // Get OID if available
-                        if (item["oid"].is_string()) {
-                            file.oid = item["oid"].as_string();
+                        // Get OID if available (prefer LFS OID for SHA256 verification)
+                        if (item["lfs"].is_object() && item["lfs"]["oid"].is_string()) {
+                            file.oid = item["lfs"]["oid"].as_string();
                         }
                         
                         info.files.push_back(file);
