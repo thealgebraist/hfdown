@@ -76,6 +76,8 @@ public:
 private:
     std::string token_;
     Http3Client http_client_;
+    HttpClient http1_client_; // For non-H3 downloads
+    HttpConfig config_;
     bool use_mirror_ = false;
     std::string mirror_url_ = "https://hf-mirror.com";
     DownloadState current_state_ = DownloadState::Idle;
