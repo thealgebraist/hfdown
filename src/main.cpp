@@ -31,7 +31,7 @@ struct FSMContext {
     int argc;
     char** argv;
     std::string cmd, token, proto, mirror;
-    int threads = 4;
+    int threads = 8;
     std::vector<std::string> args;
     int exit_code = 0;
     std::string error_message;

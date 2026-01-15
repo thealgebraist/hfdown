@@ -224,6 +224,8 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
         total_downloaded_bytes.fetch_add(file.size);
     }
 
+    std::atomic<size_t> session_downloaded_bytes{0};
+    size_t last_session_downloaded = 0;
     std::mutex progress_mutex;
     auto last_global_update = std::chrono::steady_clock::now();
 
@@ -289,17 +291,26 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
                 size_t delta = p.downloaded_bytes - chunk_downloaded_so_far;
                 chunk_downloaded_so_far = p.downloaded_bytes;
                 size_t current_total = total_downloaded_bytes.fetch_add(delta) + delta;
+                size_t current_session = session_downloaded_bytes.fetch_add(delta) + delta;
 
                 auto now = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(progress_mutex);
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_global_update).count();
-                if (elapsed >= 250 || current_total >= total_bytes) {
+                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_global_update).count();
+                if (elapsed_ms >= 250 || current_total >= total_bytes) {
                     DownloadProgress global_p;
                     global_p.downloaded_bytes = current_total;
                     global_p.total_bytes = total_bytes;
-                    global_p.speed_mbps = p.speed_mbps; 
+                    
+                    if (elapsed_ms > 0) {
+                        size_t session_delta = current_session - last_session_downloaded;
+                        global_p.speed_mbps = (session_delta / (1024.0 * 1024.0)) / (elapsed_ms / 1000.0);
+                    } else {
+                        global_p.speed_mbps = 0;
+                    }
+
                     progress_callback(global_p);
                     last_global_update = now;
+                    last_session_downloaded = current_session;
                 }
             };
 
