@@ -47,6 +47,7 @@ public:
     void close();
     
     bool is_connected() const { return connected_; }
+    bool wait_io(int timeout_ms);
     
     // HTTP/3 specific
     std::expected<void, QuicError> send_headers(const std::vector<std::pair<std::string, std::string>>& headers);

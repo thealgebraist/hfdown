@@ -32,11 +32,11 @@ public:
     AsyncFileWriter(const std::filesystem::path& path, size_t file_size);
     ~AsyncFileWriter();
 
-    // Deleted copy constructors/assignment operators to prevent accidental copying
+    // Deleted copy constructors/assignment operators
     AsyncFileWriter(const AsyncFileWriter&) = delete;
     AsyncFileWriter& operator=(const AsyncFileWriter&) = delete;
 
-    // Move constructors/assignment operators for efficiency
+    // Move constructors/assignment operators
     AsyncFileWriter(AsyncFileWriter&&) noexcept;
     AsyncFileWriter& operator=(AsyncFileWriter&&) noexcept;
 
@@ -46,24 +46,9 @@ public:
 
 private:
     int fd_;
+    void* mmap_ptr_ = nullptr;
+    size_t file_size_ = 0;
     std::filesystem::path path_;
-    
-    // For asynchronous writing
-    std::deque<WriteRequest> write_queue_;
-    std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
-    std::jthread writer_thread_;
-    std::atomic<bool> stop_thread_ = false;
-
-    // Worker function for the writer thread
-    void writer_worker_thread();
-    
-#ifdef HAS_IO_URING
-    io_uring ring_;
-    bool ring_initialized_ = false;
-#endif
-
-    std::expected<void, FileWriteError> fallback_write(const void* data, size_t size, size_t offset);
 };
 
 } // namespace hfdown

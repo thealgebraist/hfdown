@@ -22,7 +22,14 @@
 #include <gnutls/crypto.h>
 #endif
 #include <nghttp3/nghttp3.h>
-#include <sys/select.h>
+
+#ifdef __linux__
+#include <sys/epoll.h>
+#elif defined(__APPLE__)
+#include <sys/event.h>
+#include <sys/time.h>
+#endif
+
 #endif
 
 #if defined(USE_NGTCP2)
@@ -235,6 +242,45 @@ std::expected<void, QuicError> QuicSocket::connect(const std::string& host, uint
 
     connected_ = true;
     return {};
+}
+
+bool QuicSocket::wait_io(int timeout_ms) {
+#ifdef __APPLE__
+    int kq = kqueue();
+    if (kq == -1) return false;
+    struct kevent change;
+    EV_SET(&change, udp_fd_, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+    struct kevent event;
+    struct timesat timeout_spec;
+    struct timespec* ts_ptr = nullptr;
+    if (timeout_ms >= 0) {
+        timeout_spec.tv_sec = timeout_ms / 1000;
+        timeout_spec.tv_nsec = (timeout_ms % 1000) * 1000000;
+        ts_ptr = &timeout_spec;
+    }
+    int nev = kevent(kq, &change, 1, &event, 1, ts_ptr);
+    ::close(kq);
+    return nev > 0;
+#elif defined(__linux__)
+    int epfd = epoll_create1(0);
+    if (epfd == -1) return false;
+    struct epoll_event ev, events[1];
+    ev.events = EPOLLIN;
+    ev.data.fd = udp_fd_;
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, udp_fd_, &ev) == -1) {
+        ::close(epfd);
+        return false;
+    }
+    int nfds = epoll_wait(epfd, events, 1, timeout_ms);
+    ::close(epfd);
+    return nfds > 0;
+#else
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(udp_fd_, &readfds);
+    struct timeval tv{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+    return select(udp_fd_ + 1, &readfds, nullptr, nullptr, &tv) > 0;
+#endif
 }
 
 std::expected<void, QuicError> QuicSocket::init_quic() {
@@ -457,12 +503,7 @@ std::expected<void, QuicError> QuicSocket::handshake() {
             (void)s;
         }
 
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(udp_fd_, &readfds);
-        struct timeval tv{0, 1000}; // 1ms
-        int sel_rv = select(udp_fd_ + 1, &readfds, NULL, NULL, &tv);
-        if (sel_rv > 0 && FD_ISSET(udp_fd_, &readfds)) {
+        if (wait_io(1)) {
             ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
             if (recvd > 0) {
                 ngtcp2_ssize rc = ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
@@ -643,16 +684,10 @@ void QuicSocket::drive() {
     }
 
     // Receive packets
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(udp_fd_, &readfds);
-    struct timeval tv{0, 1000}; // 1ms
-    if (select(udp_fd_ + 1, &readfds, NULL, NULL, &tv) > 0) {
+    if (wait_io(1)) {
         ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
         if (recvd > 0) {
-            ngtcp2_ssize rc = ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
-            if (rc < 0) std::cerr << "[QUIC] Read error: " << rc << "\n";
-            // else std::cout << "[QUIC] Received " << recvd << " bytes\n";
+            ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
         }
     }
 #endif
@@ -721,19 +756,12 @@ std::expected<size_t, QuicError> QuicSocket::recv(std::span<char> buffer) {
     }
 #if defined(USE_NGTCP2)
     // Minimal ngtcp2 skeleton: read from UDP socket with timeout
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(udp_fd_, &readfds);
-    struct timeval tv{2, 0}; // 2s timeout
-    int rv = select(udp_fd_ + 1, &readfds, NULL, NULL, &tv);
-    if (rv == 0) return std::unexpected(QuicError{"Recv timeout", ETIMEDOUT});
-    if (rv < 0) return std::unexpected(QuicError{"select failed", errno});
-    if (FD_ISSET(udp_fd_, &readfds)) {
+    if (wait_io(2000)) {
         ssize_t received = ::recv(udp_fd_, buffer.data(), buffer.size(), 0);
         if (received < 0) return std::unexpected(QuicError{"Recv failed", errno});
         return static_cast<size_t>(received);
     }
-    return std::unexpected(QuicError{"No data", 0});
+    return std::unexpected(QuicError{"Recv timeout", ETIMEDOUT});
 #else
     // UDP fallback (demo only) with timeout
     fd_set readfds;
@@ -757,9 +785,27 @@ std::expected<void, QuicError> QuicSocket::send_headers(
 #if defined(USE_NGTCP2)
     if (!ng_h3conn_ || !ng_conn_) return std::unexpected(QuicError{"nghttp3/ngtcp2 not initialized", 0});
 
+    int64_t stream_id = -1;
+    int rv = ngtcp2_conn_open_bidi_stream(ng_conn_, &stream_id, nullptr);
+    if (rv != 0) return std::unexpected(QuicError{"ngtcp2_conn_open_bidi_stream failed", rv});
+    
+    // Add :path header if not present
+    bool has_path = false;
+    bool has_range = false;
+    for (const auto& [k, v] : headers) {
+        if (k == ":path") { has_path = true; }
+        if (k == "Range") { has_range = true; }
+    }
+    
+    std::vector<std::pair<std::string, std::string>> final_headers = headers;
+    if (!has_path) {
+        // std::cerr << "[H3] Warning: :path header missing, defaulting to /\n";
+        final_headers.emplace_back(":path", "/");
+    }
+
     std::vector<nghttp3_nv> nva;
     std::vector<std::string> names, values;
-    for (const auto& [k, v] : headers) {
+    for (const auto& [k, v] : final_headers) {
         names.push_back(k);
         values.push_back(v);
     }
@@ -773,10 +819,6 @@ std::expected<void, QuicError> QuicSocket::send_headers(
         });
     }
 
-    int64_t stream_id = -1;
-    int rv = ngtcp2_conn_open_bidi_stream(ng_conn_, &stream_id, nullptr);
-    if (rv != 0) return std::unexpected(QuicError{"ngtcp2_conn_open_bidi_stream failed", rv});
-    
     ng_stream_id_ = static_cast<uint64_t>(stream_id);
     rv = nghttp3_conn_submit_request(ng_h3conn_, stream_id, nva.data(), nva.size(), nullptr, nullptr);
     if (rv != 0) return std::unexpected(QuicError{"nghttp3_conn_submit_request failed", rv});
