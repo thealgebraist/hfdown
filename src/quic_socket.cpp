@@ -630,13 +630,17 @@ void QuicSocket::drive() {
         if (written > 0) {
             ::send(udp_fd_, out, written, 0);
             if (pdatalen >= 0) nghttp3_conn_add_write_offset(ng_h3conn_, h3_stream, static_cast<size_t>(pdatalen));
+            // std::cout << "[H3] Sent " << written << " bytes on stream " << h3_stream << "\n";
         }
     }
 
     // Send other QUIC packets
     uint8_t out[1500];
     ngtcp2_ssize written = ngtcp2_conn_write_pkt(ng_conn_, &path, &pi, out, sizeof(out), (ngtcp2_tstamp)quic_now_ns());
-    if (written > 0) ::send(udp_fd_, out, written, 0);
+    if (written > 0) {
+        ::send(udp_fd_, out, written, 0);
+        // std::cout << "[QUIC] Sent " << written << " control bytes\n";
+    }
 
     // Receive packets
     fd_set readfds;
@@ -646,7 +650,9 @@ void QuicSocket::drive() {
     if (select(udp_fd_ + 1, &readfds, NULL, NULL, &tv) > 0) {
         ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
         if (recvd > 0) {
-            ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
+            ngtcp2_ssize rc = ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
+            if (rc < 0) std::cerr << "[QUIC] Read error: " << rc << "\n";
+            // else std::cout << "[QUIC] Received " << recvd << " bytes\n";
         }
     }
 #endif
@@ -660,6 +666,7 @@ std::expected<QuicResponse, QuicError> QuicSocket::get_response() {
         drive();
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - start).count() > 30) {
+            std::cerr << "[H3] Timeout waiting for stream " << sid << "\n";
             return std::unexpected(QuicError{"Response timeout", ETIMEDOUT});
         }
     }
@@ -778,7 +785,8 @@ std::expected<void, QuicError> QuicSocket::send_headers(
     while (h3_headers_.count(stream_id) == 0) {
         drive();
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - start).count() > 3) {
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - start).count() > 5) {
+            std::cerr << "[H3] Timed out waiting for response headers on stream " << stream_id << "\n";
             return std::unexpected(QuicError{"Timed out waiting for response headers", 0});
         }
     }
