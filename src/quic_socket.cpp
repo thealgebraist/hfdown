@@ -65,8 +65,7 @@ static int recv_stream_data_cb(ngtcp2_conn*, uint32_t flags, int64_t stream_id, 
     auto* s = static_cast<QuicSocket*>(user_data);
     if (!s->ng_h3conn_) return 0;
     int fin = (flags & NGTCP2_STREAM_DATA_FLAG_FIN) != 0;
-    nghttp3_tstamp ts = (nghttp3_tstamp)quic_now_ns();
-    int rv = nghttp3_conn_read_stream2(s->ng_h3conn_, stream_id, data, datalen, fin, ts);
+    int rv = nghttp3_conn_read_stream(s->ng_h3conn_, stream_id, data, datalen, fin);
     if (rv != 0) return NGTCP2_ERR_CALLBACK_FAILURE;
     return 0;
 }
