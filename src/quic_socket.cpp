@@ -363,9 +363,16 @@ std::expected<void, QuicError> QuicSocket::handshake() {
     // Generate random DCID/SCID
     uint8_t dcidbuf[16];
     uint8_t scidbuf[16];
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     if (RAND_bytes(dcidbuf, sizeof(dcidbuf)) != 1 || RAND_bytes(scidbuf, sizeof(scidbuf)) != 1) {
         return std::unexpected(QuicError{"RAND_bytes failed", 0});
     }
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    if (gnutls_rnd(GNUTLS_RND_RANDOM, dcidbuf, sizeof(dcidbuf)) != 0 || 
+        gnutls_rnd(GNUTLS_RND_RANDOM, scidbuf, sizeof(scidbuf)) != 0) {
+        return std::unexpected(QuicError{"gnutls_rnd failed", 0});
+    }
+#endif
     ngtcp2_cid dcid;
     ngtcp2_cid scid;
     ngtcp2_cid_init(&dcid, dcidbuf, sizeof(dcidbuf));
@@ -483,7 +490,15 @@ std::expected<void, QuicError> QuicSocket::handshake() {
 
     const uint8_t* alpn_val = nullptr;
     unsigned int alpn_len = 0;
+#ifdef USE_NGTCP2_CRYPTO_OSSL
     SSL_get0_alpn_selected(ng_ssl_, &alpn_val, &alpn_len);
+#elif defined(USE_NGTCP2_CRYPTO_GNUTLS)
+    gnutls_datum_t alpn_gnutls;
+    if (gnutls_alpn_get_selected_protocol(ng_gnutls_session_, &alpn_gnutls) == 0) {
+        alpn_val = alpn_gnutls.data;
+        alpn_len = alpn_gnutls.size;
+    }
+#endif
     if (alpn_val) {
         // std::cout << "Negotiated ALPN: " << std::string((const char*)alpn_val, alpn_len) << "\n";
     }
