@@ -203,12 +203,16 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
                     if (progress_callback) {
                         auto now = std::chrono::steady_clock::now();
                         static std::atomic<uint64_t> last_msg_ms{0};
+                        static std::atomic<size_t> last_global_bytes{total_downloaded_bytes};
+                        
                         auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
                         auto prev_ms = last_msg_ms.load();
+                        
                         if (now_ms - prev_ms >= 100 || p.downloaded_bytes >= p.total_bytes) {
                             if (last_msg_ms.compare_exchange_strong(prev_ms, now_ms)) {
                                 DownloadProgress global_p;
-                                global_p.downloaded_bytes = global_downloaded.load();
+                                auto current_global = global_downloaded.load();
+                                global_p.downloaded_bytes = current_global;
                                 global_p.total_bytes = total_bytes;
                                 
                                 {
@@ -223,9 +227,11 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
                                     global_p.active_files = active;
                                 }
 
-                                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-                                if (elapsed > 0) {
-                                    global_p.speed_mbps = (static_cast<double>(global_p.downloaded_bytes - total_downloaded_bytes) / (1024.0 * 1024.0)) / (elapsed / 1000.0);
+                                auto delta_ms = now_ms - prev_ms;
+                                if (delta_ms > 0) {
+                                    size_t prev_bytes = last_global_bytes.exchange(current_global);
+                                    size_t delta_bytes = (current_global > prev_bytes) ? (current_global - prev_bytes) : 0;
+                                    global_p.speed_mbps = (static_cast<double>(delta_bytes) / (1024.0 * 1024.0)) / (static_cast<double>(delta_ms) / 1000.0);
                                 }
                                 progress_callback(global_p);
                             }

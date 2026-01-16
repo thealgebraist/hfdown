@@ -57,15 +57,17 @@ void print_progress(const DownloadProgress& p) {
     compact::Writer::print_num(static_cast<long>(p.percentage()));
     compact::Writer::print("%] ");
     compact::Writer::print_num(static_cast<long>(p.speed_mbps));
-    compact::Writer::print(" MB/s | Total: ");
+    compact::Writer::print(" MB/s | ");
     compact::Writer::print_num(static_cast<long>(p.downloaded_bytes / (1024 * 1024)));
+    compact::Writer::print("/");
+    compact::Writer::print_num(static_cast<long>(p.total_bytes / (1024 * 1024)));
     compact::Writer::print(" MB");
     if (!p.active_files.empty()) {
-        compact::Writer::print(" | Downloading: ");
+        compact::Writer::print(" | Active: ");
         compact::Writer::print(p.active_files);
     }
-    // Clear the rest of the line (simple hack)
-    compact::Writer::print("                ");
+    // Clear the rest of the line with spaces
+    compact::Writer::print("                                        ");
     if (p.downloaded_bytes >= p.total_bytes) compact::Writer::nl();
 }
 
