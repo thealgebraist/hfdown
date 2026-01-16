@@ -74,7 +74,7 @@ std::expected<ModelInfo, HFErrorInfo> HuggingFaceClient::get_model_info(
         }
         else if (k == "oid") current.oid = std::string(v);
         else if (k == "lfs" && !is_str) {
-            json::SAXParser::parse_tree_api(v, [&](std::string_view lk, std::string_view lv, bool lis_str) {
+            json::SAXParser::parse_tree_api(v, [&](std::string_view lk, std::string_view lv, bool /*lis_str*/) {
                 if (lk == "oid") current.oid = std::string(lv);
             });
         }

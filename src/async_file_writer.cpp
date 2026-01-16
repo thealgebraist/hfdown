@@ -9,7 +9,7 @@
 namespace hfdown {
 
 AsyncFileWriter::AsyncFileWriter(const std::filesystem::path& path, size_t file_size)
-    : path_(path), file_size_(file_size)
+    : fd_(-1), mmap_ptr_(nullptr), file_size_(file_size), path_(path)
 {
     fd_ = open(path.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd_ == -1) {

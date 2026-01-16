@@ -8,6 +8,13 @@
 #include <cerrno>
 #include <chrono>
 
+#ifdef __linux__
+#include <sys/epoll.h>
+#elif defined(__APPLE__)
+#include <sys/event.h>
+#include <sys/time.h>
+#endif
+
 #ifdef USE_NGTCP2
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
@@ -22,14 +29,6 @@
 #include <gnutls/crypto.h>
 #endif
 #include <nghttp3/nghttp3.h>
-
-#ifdef __linux__
-#include <sys/epoll.h>
-#elif defined(__APPLE__)
-#include <sys/event.h>
-#include <sys/time.h>
-#endif
-
 #endif
 
 #if defined(USE_NGTCP2)
@@ -793,10 +792,8 @@ std::expected<void, QuicError> QuicSocket::send_headers(
     
     // Add :path header if not present
     bool has_path = false;
-    bool has_range = false;
     for (const auto& [k, v] : headers) {
         if (k == ":path") { has_path = true; }
-        if (k == "Range") { has_range = true; }
     }
     
     std::vector<std::pair<std::string, std::string>> final_headers = headers;
@@ -836,6 +833,7 @@ std::expected<void, QuicError> QuicSocket::send_headers(
     }
     return {};
 #else
+    (void)headers;
     return std::unexpected(QuicError{"No QUIC backend", 0});
 #endif
 }

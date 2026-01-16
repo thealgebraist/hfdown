@@ -114,13 +114,13 @@ bool RsyncClient::heuristic_append_only(const ModelFile& remote, const std::file
     return remote.size > local_size && local_size > 0;
 }
 
-bool RsyncClient::heuristic_sparse_chunks(const ModelFile& remote, const std::filesystem::path& local, std::string&) {
+bool RsyncClient::heuristic_sparse_chunks(const ModelFile& /*remote*/, const std::filesystem::path& local, std::string&) {
     if (!std::filesystem::exists(local)) return false;
     // Just a placeholder for the logic: if sizes are identical, check entropy or headers
     return false; 
 }
 
-bool RsyncClient::heuristic_suffix_match(const ModelFile& remote, const std::filesystem::path& local, std::string&) {
+bool RsyncClient::heuristic_suffix_match(const ModelFile& /*remote*/, const std::filesystem::path& /*local*/, std::string&) {
     // Some models update by appending new layers
     return false;
 }

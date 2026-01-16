@@ -119,7 +119,7 @@ std::vector<std::string> SecretScanner::find_secrets(const std::filesystem::path
     return findings;
 }
 
-bool SecretScanner::install_hook(const std::filesystem::path& repo_path) {
+bool SecretScanner::install_hook(const std::filesystem::path& /*repo_path*/) {
     return false; // Hook logic removed for brevity/speed
 }
 
