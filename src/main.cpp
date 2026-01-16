@@ -36,6 +36,7 @@ void print_usage(const char* program_name) {
     compact::Writer::print(program_name);
     compact::Writer::print(" <command> [options]\n\nCommands:\n"
                            "  info <model-id>              Get model information\n"
+                           "  list <model-id>              List model files\n"
                            "  download <model-id> [dir]    Download entire model\n"
                            "  file <model-id> <filename>   Download specific file\n"
                            "  http3-test <url>             Test HTTP/3 connectivity\n\nOptions:\n"
@@ -58,6 +59,17 @@ void print_progress(const DownloadProgress& p) {
     if (p.downloaded_bytes >= p.total_bytes) compact::Writer::nl();
 }
 
+std::string format_size(size_t bytes) {
+    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    int i = 0;
+    double size = static_cast<double>(bytes);
+    while (size >= 1024 && i < 4) {
+        size /= 1024;
+        i++;
+    }
+    return std::format("{:.2f} {}", size, units[i]);
+}
+
 int cmd_info(const std::string& model_id, const std::string& token, const std::string& proto, const std::string& mirror) {
     HuggingFaceClient client(token);
     if (!proto.empty()) client.set_protocol(proto);
@@ -66,6 +78,30 @@ int cmd_info(const std::string& model_id, const std::string& token, const std::s
     if (!res) { compact::Writer::error("Error: "); compact::Writer::error(res.error().message); compact::Writer::error("\n"); return 1; }
     compact::Writer::print("Model: "); compact::Writer::print(res->model_id); compact::Writer::nl();
     compact::Writer::print("Files: "); compact::Writer::print_num(res->files.size()); compact::Writer::nl();
+    
+    size_t total_size = 0;
+    for (const auto& f : res->files) total_size += f.size;
+    compact::Writer::print("Total Size: "); compact::Writer::print(format_size(total_size)); compact::Writer::nl();
+    
+    return 0;
+}
+
+int cmd_list(const std::string& model_id, const std::string& token, const std::string& proto, const std::string& mirror) {
+    HuggingFaceClient client(token);
+    if (!proto.empty()) client.set_protocol(proto);
+    if (!mirror.empty()) { client.use_mirror(true); client.set_mirror_url(mirror); }
+    auto res = client.get_model_info(model_id);
+    if (!res) { compact::Writer::error("Error: "); compact::Writer::error(res.error().message); compact::Writer::error("\n"); return 1; }
+    
+    compact::Writer::print("Model: "); compact::Writer::print(model_id); compact::Writer::nl();
+    for (const auto& file : res->files) {
+        compact::Writer::print(file.filename); 
+        compact::Writer::print("  "); 
+        compact::Writer::print(format_size(file.size)); 
+        compact::Writer::print("  "); 
+        compact::Writer::print(file.oid); 
+        compact::Writer::nl();
+    }
     return 0;
 }
 
@@ -151,6 +187,8 @@ int main(int argc, char** argv) {
 
                 if (ctx.cmd == "info") {
                     if (ctx.args.empty()) { ctx.exit_code = 1; ctx.error_message = "info requires <model-id>"; state = FSMState::Error; break; }
+                } else if (ctx.cmd == "list") {
+                    if (ctx.args.empty()) { ctx.exit_code = 1; ctx.error_message = "list requires <model-id>"; state = FSMState::Error; break; }
                 } else if (ctx.cmd == "download") {
                     if (ctx.args.empty()) { ctx.exit_code = 1; ctx.error_message = "download requires <model-id>"; state = FSMState::Error; break; }
                 } else if (ctx.cmd == "file") {
@@ -165,6 +203,10 @@ int main(int argc, char** argv) {
                 if (ctx.cmd == "info" && !ctx.args.empty()) {
                     ctx.exit_code = cmd_info(ctx.args[0], ctx.token, ctx.proto, ctx.mirror);
                     ctx.result_message = "Info command executed.";
+                    state = FSMState::PostCommand;
+                } else if (ctx.cmd == "list" && !ctx.args.empty()) {
+                    ctx.exit_code = cmd_list(ctx.args[0], ctx.token, ctx.proto, ctx.mirror);
+                    ctx.result_message = "List command executed.";
                     state = FSMState::PostCommand;
                 } else if (ctx.cmd == "download" && !ctx.args.empty()) {
                     ctx.exit_code = cmd_download(ctx.args[0], ctx.args.size() > 1 ? ctx.args[1] : ".", ctx.token, ctx.proto, ctx.mirror, ctx.threads, ctx.buffer_size);

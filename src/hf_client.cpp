@@ -73,11 +73,16 @@ std::expected<ModelInfo, HFErrorInfo> HuggingFaceClient::get_model_info(
             std::from_chars(v.data(), v.data() + v.size(), current.size);
         }
         else if (k == "oid") current.oid = std::string(v);
-        
+        else if (k == "lfs" && !is_str) {
+            json::SAXParser::parse_tree_api(v, [&](std::string_view lk, std::string_view lv, bool lis_str) {
+                if (lk == "oid") current.oid = std::string(lv);
+            });
+        }
+    }, [&]() {
         if (current.is_file && !current.path.empty() && current.size > 0) {
             info.files.push_back({current.path, current.size, current.oid});
-            current = {};
         }
+        current = {};
     });
     
     return info;
@@ -101,7 +106,7 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_file(
     }
 
     std::string url = get_file_url(model_id, filename);
-    auto result = http_client_.download_file(url, output_path, progress_callback, 0, expected_oid);
+    auto result = http_client_.download_file(url, output_path, progress_callback, 0, expected_oid.size() == 64 ? expected_oid : "");
     
     if (!result) {
         return std::unexpected(HFErrorInfo{
@@ -173,8 +178,8 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
             }
         };
 
-        auto result = http_client_.download_file(url, file_path, file_callback, 0, file.oid);
-        if (!result) return std::unexpected(HFErrorInfo{HFError::NetworkError, "File failed"});
+        auto result = http_client_.download_file(url, file_path, file_callback, 0, file.oid.size() == 64 ? file.oid : "");
+        if (!result) return std::unexpected(HFErrorInfo{HFError::NetworkError, "File failed: " + result.error().message});
         total_downloaded_bytes += file.size;
         file_count++;
         compact::Writer::error("[HF] Completed "); compact::Writer::print_num(file_count);

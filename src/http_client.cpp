@@ -11,6 +11,7 @@
 #include <sstream>
 #include <unistd.h>
 #include <fcntl.h>
+#include <charconv>
 
 namespace hfdown {
 
@@ -30,7 +31,7 @@ struct DownloadContext {
 static size_t write_string_callback(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t realsize = size * nmemb;
     auto* body = static_cast<std::string*>(userp);
-    if (body->size() + realsize > body->max_size()) return 0; // Trigger CURLE_WRITE_ERROR
+    if (body->size() + realsize > body->max_size()) return 0;
     body->append(static_cast<char*>(contents), realsize);
     return realsize;
 }
@@ -38,13 +39,12 @@ static size_t write_string_callback(void* contents, size_t size, size_t nmemb, v
 static size_t write_file_callback(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t realsize = size * nmemb;
     auto* ctx = static_cast<DownloadContext*>(userp);
-    
     auto result = ctx->writer->write_at(contents, realsize, ctx->current_offset);
     if (result) {
         ctx->current_offset += realsize;
-        if (ctx->use_checksum) {
-            EVP_DigestUpdate(ctx->sha_ctx, contents, realsize);
-        }
+        if (ctx->use_checksum) EVP_DigestUpdate(ctx->sha_ctx, contents, realsize);
+    } else {
+        return 0;
     }
     return realsize;
 }
@@ -53,17 +53,13 @@ static size_t header_callback(void* contents, size_t size, size_t nmemb, void* u
     size_t realsize = size * nmemb;
     auto* response = static_cast<HttpResponse*>(userp);
     std::string line(static_cast<char*>(contents), realsize);
-    
     if (auto colon = line.find(':'); colon != std::string::npos) {
         auto key = line.substr(0, colon);
         auto value = line.substr(colon + 1);
         value.erase(0, value.find_first_not_of(" 	"));
         value.erase(value.find_last_not_of(" 	\r\n") + 1);
         response->headers[key] = value;
-        
-        if (key == "Alt-Svc" || key == "alt-svc") {
-            response->alt_svc = value;
-        }
+        if (key == "Alt-Svc" || key == "alt-svc") response->alt_svc = value;
     }
     return realsize;
 }
@@ -72,17 +68,13 @@ static int progress_callback_func(void* clientp, curl_off_t dltotal, curl_off_t 
     (void)ultotal; (void)ulnow;
     auto* data = static_cast<ProgressData*>(clientp);
     if (!data->callback) return 0;
-    
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - data->last_time).count();
-    
     if (elapsed >= 250 || dlnow == dltotal) {
         DownloadProgress progress;
         progress.downloaded_bytes = static_cast<size_t>(dlnow);
         progress.total_bytes = static_cast<size_t>(dltotal);
-        if (elapsed > 0) {
-            progress.speed_mbps = ((dlnow - data->last_downloaded) / (1024.0 * 1024.0)) / (elapsed / 1000.0);
-        }
+        if (elapsed > 0) progress.speed_mbps = ((dlnow - data->last_downloaded) / (1024.0 * 1024.0)) / (elapsed / 1000.0);
         data->callback(progress);
         data->last_time = now;
         data->last_downloaded = dlnow;
@@ -95,14 +87,8 @@ public:
     std::map<std::string, std::string> headers;
     long timeout = 300;
     HttpConfig config;
-    
-    Impl() {
-        curl_global_init(CURL_GLOBAL_ALL);
-    }
-    
-    ~Impl() {
-        curl_global_cleanup();
-    }
+    Impl() { curl_global_init(CURL_GLOBAL_ALL); }
+    ~Impl() { curl_global_cleanup(); }
 };
 
 HttpClient::HttpClient() : pImpl_(std::make_unique<Impl>()) {}
@@ -114,19 +100,23 @@ void HttpClient::set_header(std::string_view key, std::string_view value) {
     pImpl_->headers[std::string(key)] = std::string(value);
 }
 
-void HttpClient::set_timeout(long seconds) {
-    pImpl_->timeout = seconds;
-}
+void HttpClient::set_timeout(long seconds) { pImpl_->timeout = seconds; }
+void HttpClient::set_config(const HttpConfig& config) { pImpl_->config = config; }
 
-void HttpClient::set_config(const HttpConfig& config) {
-    pImpl_->config = config;
+static void set_http_version(CURL* curl, const HttpConfig& config, std::string_view url) {
+    if (config.enable_http2) {
+        if (url.starts_with("https://")) {
+            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+        } else {
+            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+        }
+    }
 }
 
 std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(std::string_view url_sv) {
     std::string url(url_sv);
     CURL* curl = curl_easy_init();
     if (!curl) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to init CURL"});
-    
     HttpResponse response;
     std::string body;
     struct curl_slist* chunk = nullptr;
@@ -134,179 +124,124 @@ std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(std::string_view
         std::string h = k; h += ": "; h += v;
         chunk = curl_slist_append(chunk, h.c_str());
     }
-    
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L); // Enable verbose traces
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, pImpl_->timeout);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response);
-    
-    if (pImpl_->config.enable_http2) {
-        if (url.starts_with("http://")) {
-            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
-        } else {
-            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
-        }
-    }
-    
-    // std::cerr << "[DEBUG] Performing CURL request to: " << url << std::endl;
+    set_http_version(curl, pImpl_->config, url);
     CURLcode res = curl_easy_perform(curl);
-    // std::cerr << "[DEBUG] CURL request finished with code: " << res << std::endl;
-    
+    curl_slist_free_all(chunk);
     if (res != CURLE_OK) {
-        curl_slist_free_all(chunk);
         curl_easy_cleanup(curl);
         return std::unexpected(HttpErrorInfo{HttpError::NetworkError, curl_easy_strerror(res)});
     }
-    
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     response.status_code = static_cast<int>(http_code);
     response.body = std::move(body);
-    response.protocol = "http/1.1";
-    
-    long http_version = 0;
-    curl_easy_getinfo(curl, CURLINFO_HTTP_VERSION, &http_version);
-    if (http_version == CURL_HTTP_VERSION_2_0) response.protocol = "h2";
-    else if (http_version == CURL_HTTP_VERSION_3) response.protocol = "h3";
-    
-    curl_slist_free_all(chunk);
     curl_easy_cleanup(curl);
-    
     return response;
 }
 
 std::expected<std::string, HttpErrorInfo> HttpClient::get(std::string_view url) {
     auto res = get_full(url);
     if (!res) return std::unexpected(res.error());
-    if (res->status_code >= 400) {
-        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", res->status_code});
-    }
+    if (res->status_code >= 400) return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", res->status_code});
     return std::move(res->body);
 }
 
-std::expected<void, HttpErrorInfo> HttpClient::download_file(
-    std::string_view url_sv,
-    const std::filesystem::path& output_path,
-    ProgressCallback progress_callback,
-    size_t resume_offset,
-    std::string_view expected_checksum,
-    size_t write_offset
-) {
+std::expected<std::string, HttpErrorInfo> HttpClient::post(std::string_view url_sv, std::string_view body_sv) {
     std::string url(url_sv);
+    std::string body(body_sv);
     CURL* curl = curl_easy_init();
     if (!curl) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to init CURL"});
-    
-    if (output_path.has_parent_path()) {
-        std::filesystem::create_directories(output_path.parent_path());
-    }
-    
-    // Create high-performance writer (size 0 here as we pre-allocate elsewhere)
-    AsyncFileWriter writer(output_path, 0);
-    
-    DownloadContext dctx;
-    dctx.writer = &writer;
-    dctx.current_offset = write_offset + resume_offset;
-    dctx.use_checksum = !expected_checksum.empty();
-    dctx.sha_ctx = nullptr;
-    if (dctx.use_checksum) {
-        dctx.sha_ctx = EVP_MD_CTX_new();
-        EVP_DigestInit_ex(dctx.sha_ctx, EVP_sha256(), nullptr);
-        if (resume_offset > 0 || write_offset > 0) {
-            dctx.use_checksum = false;
-            EVP_MD_CTX_free(dctx.sha_ctx);
-            dctx.sha_ctx = nullptr;
-        }
-    }
-
+    std::string response_body;
+    HttpResponse response;
     struct curl_slist* chunk = nullptr;
     for (const auto& [k, v] : pImpl_->headers) {
         std::string h = k; h += ": "; h += v;
         chunk = curl_slist_append(chunk, h.c_str());
     }
-
+    chunk = curl_slist_append(chunk, "Content-Type: application/json");
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L); // Enable verbose traces
-    
-    if (pImpl_->config.enable_http2) {
-        if (url.starts_with("http://")) {
-            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
-        } else {
-            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
-        }
-    }
-
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &dctx);
-    
-    ProgressData pdata;
-    pdata.callback = progress_callback;
-    pdata.last_time = std::chrono::steady_clock::now();
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback_func);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &pdata);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, pImpl_->config.buffer_size);
-
-    if (resume_offset > 0) {
-        curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)resume_offset);
-    }
-    
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+    set_http_version(curl, pImpl_->config, url);
     CURLcode res = curl_easy_perform(curl);
-    writer.close();
     curl_slist_free_all(chunk);
-    
-    if (res != CURLE_OK) {
-        if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
-        curl_easy_cleanup(curl);
-        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, curl_easy_strerror(res)});
-    }
     
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     
-    // Check if we got the expected response for a Range request
-    bool range_requested = (resume_offset > 0 || write_offset > 0);
-    if (range_requested && http_code == 200) {
-        if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
+    if (res != CURLE_OK) {
         curl_easy_cleanup(curl);
-        return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, "Server returned 200 OK instead of 206 Partial Content for a Range request"});
-    }
-
-    if (http_code >= 400 && http_code != 206) { 
-        if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
-        curl_easy_cleanup(curl);
-        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", static_cast<int>(http_code)});
+        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, curl_easy_strerror(res), (int)http_code});
     }
     
+    curl_easy_cleanup(curl);
+    if (http_code >= 400) return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", (int)http_code});
+    return response_body;
+}
+
+std::expected<void, HttpErrorInfo> HttpClient::download_file(std::string_view url_sv, const std::filesystem::path& output_path, ProgressCallback progress_callback, size_t resume_offset, std::string_view expected_checksum, size_t write_offset) {
+    std::string url(url_sv);
+    CURL* curl = curl_easy_init();
+    if (!curl) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to init CURL"});
+    if (output_path.has_parent_path()) std::filesystem::create_directories(output_path.parent_path());
+    AsyncFileWriter writer(output_path, 0);
+    DownloadContext dctx{&writer, write_offset + resume_offset, nullptr, !expected_checksum.empty()};
+    if (dctx.use_checksum) {
+        dctx.sha_ctx = EVP_MD_CTX_new();
+        EVP_DigestInit_ex(dctx.sha_ctx, EVP_sha256(), nullptr);
+        if (resume_offset > 0 || write_offset > 0) { dctx.use_checksum = false; EVP_MD_CTX_free(dctx.sha_ctx); dctx.sha_ctx = nullptr; }
+    }
+    struct curl_slist* chunk = nullptr;
+    for (const auto& [k, v] : pImpl_->headers) {
+        std::string h = k; h += ": "; h += v;
+        chunk = curl_slist_append(chunk, h.c_str());
+    }
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &dctx);
+    set_http_version(curl, pImpl_->config, url);
+    ProgressData pdata{progress_callback, std::chrono::steady_clock::now(), 0};
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback_func);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &pdata);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    if (resume_offset > 0) curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)resume_offset);
+    CURLcode res = curl_easy_perform(curl);
+    writer.close(); curl_slist_free_all(chunk);
+    if (res != CURLE_OK) {
+        if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
+        curl_easy_cleanup(curl); return std::unexpected(HttpErrorInfo{HttpError::NetworkError, curl_easy_strerror(res)});
+    }
+    long http_code = 0; curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if ((resume_offset > 0 || write_offset > 0) && http_code == 200) {
+        if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
+        curl_easy_cleanup(curl); return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, "Expected 206"});
+    }
+    if (http_code >= 400 && http_code != 206) {
+        if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
+        curl_easy_cleanup(curl); return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", (int)http_code});
+    }
     if (dctx.use_checksum && dctx.sha_ctx) {
-        unsigned char hash[32]; // SHA256_DIGEST_LENGTH
-        unsigned int hash_len = 0;
+        unsigned char hash[32]; unsigned int hash_len = 0;
         EVP_DigestFinal_ex(dctx.sha_ctx, hash, &hash_len);
         EVP_MD_CTX_free(dctx.sha_ctx);
-        dctx.sha_ctx = nullptr;
-
-        std::string actual_checksum;
-        actual_checksum.reserve(64);
+        std::string actual; actual.reserve(64);
         for (unsigned int i = 0; i < hash_len; ++i) {
-            char buf[3];
-            std::to_chars(buf, buf + 2, (int)hash[i], 16);
-            actual_checksum += buf[0];
-            actual_checksum += buf[1];
+            actual += std::format("{:02x}", hash[i]);
         }
-        if (actual_checksum != expected_checksum) {
-            curl_easy_cleanup(curl);
-            return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, "Checksum mismatch!"});
-        }
-    } else if (dctx.sha_ctx) {
-        EVP_MD_CTX_free(dctx.sha_ctx);
-    }
-
+        if (actual != expected_checksum) { curl_easy_cleanup(curl); return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, "Checksum mismatch"}); }
+    } else if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
     curl_easy_cleanup(curl);
     return {};
 }

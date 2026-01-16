@@ -73,6 +73,9 @@ public:
     // GET request returning response body as string
     std::expected<std::string, HttpErrorInfo> get(std::string_view url);
 
+    // POST request returning response body as string
+    std::expected<std::string, HttpErrorInfo> post(std::string_view url, std::string_view body);
+
     // GET request returning full response object
     std::expected<struct HttpResponse, HttpErrorInfo> get_full(std::string_view url);
     

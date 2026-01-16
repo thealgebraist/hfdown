@@ -69,15 +69,31 @@ class SAXParser {
 public:
     using Callback = std::function<void(std::string_view key, std::string_view value, bool is_string)>;
 
-    static void parse_tree_api(std::string_view input, Callback cb) {
+    static void parse_tree_api(std::string_view input, Callback cb, std::function<void()> on_obj_end = nullptr) {
         size_t pos = 0;
         while (pos < input.size()) {
             pos = input.find('{', pos);
             if (pos == std::string_view::npos) break;
-            size_t end = input.find('}', pos);
-            if (end == std::string_view::npos) break;
-            parse_object_simple(input.substr(pos + 1, end - pos - 1), cb);
-            pos = end + 1;
+            
+            int depth = 1;
+            size_t end = pos + 1;
+            while (end < input.size() && depth > 0) {
+                if (input[end] == '"') {
+                    end++;
+                    while (end < input.size()) {
+                        if (input[end] == '\\') end += 2;
+                        else if (input[end] == '"') break;
+                        else end++;
+                    }
+                } else if (input[end] == '{') depth++;
+                else if (input[end] == '}') depth--;
+                end++;
+            }
+            if (depth > 0) break;
+            
+            parse_object_simple(input.substr(pos + 1, end - pos - 2), cb);
+            if (on_obj_end) on_obj_end();
+            pos = end;
         }
     }
 
@@ -93,18 +109,42 @@ private:
             p = obj.find(':', key_end);
             if (p == std::string_view::npos) break;
             p++;
-            while (p < obj.size() && (obj[p] == ' ' || obj[p] == '\t')) p++;
+            while (p < obj.size() && (std::isspace(obj[p]))) p++;
             if (p >= obj.size()) break;
+            
             size_t val_end;
-            bool is_str = (obj[p] == '"');
-            if (is_str) {
-                val_end = obj.find('"', p + 1);
-                if (val_end == std::string_view::npos) break;
+            if (obj[p] == '"') {
+                val_end = p + 1;
+                while (val_end < obj.size()) {
+                    if (obj[val_end] == '\\') val_end += 2;
+                    else if (obj[val_end] == '"') break;
+                    else val_end++;
+                }
+                if (val_end >= obj.size()) break;
                 cb(key, obj.substr(p + 1, val_end - p - 1), true);
                 p = val_end + 1;
+            } else if (obj[p] == '{' || obj[p] == '[') {
+                char open = obj[p];
+                char close = (open == '{' ? '}' : ']');
+                int depth = 1;
+                val_end = p + 1;
+                while (val_end < obj.size() && depth > 0) {
+                    if (obj[val_end] == '"') {
+                        val_end++;
+                        while (val_end < obj.size()) {
+                            if (obj[val_end] == '\\') val_end += 2;
+                            else if (obj[val_end] == '"') break;
+                            else val_end++;
+                        }
+                    } else if (obj[val_end] == open) depth++;
+                    else if (obj[val_end] == close) depth--;
+                    val_end++;
+                }
+                cb(key, obj.substr(p, val_end - p), false);
+                p = val_end;
             } else {
                 val_end = p;
-                while (val_end < obj.size() && obj[val_end] != ',' && obj[val_end] != ' ' && obj[val_end] != '}') val_end++;
+                while (val_end < obj.size() && obj[val_end] != ',' && !std::isspace(obj[val_end]) && obj[val_end] != '}') val_end++;
                 cb(key, obj.substr(p, val_end - p), false);
                 p = val_end;
             }

@@ -179,6 +179,28 @@ target_link_libraries(hfdown PRIVATE
     CURL::libcurl
 )
 
+# Agent Implementation Controller
+add_executable(agentimpl 
+    src/agent_impl.cpp 
+    src/http_client.cpp 
+    src/async_file_writer.cpp
+    src/quic_socket.cpp
+    src/http3_client.cpp
+    src/lisp.cpp
+)
+target_include_directories(agentimpl PRIVATE include ${OPENSSL_INCLUDE_DIR})
+target_link_libraries(agentimpl PRIVATE 
+    Threads::Threads
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    CURL::libcurl
+)
+if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
+    target_include_directories(agentimpl PRIVATE ${NGTCP2_ALL_INCLUDE_DIRS})
+    target_link_libraries(agentimpl PRIVATE ${NGTCP2_ALL_LIBRARIES})
+    target_compile_definitions(agentimpl PRIVATE USE_NGTCP2)
+endif()
+
 # Apply ngtcp2/nghttp3 include/libs to the hfdown target if configured
 if(USE_NGTCP2 AND NGTCP2_CONFIGURED)
     target_include_directories(hfdown PRIVATE ${NGTCP2_ALL_INCLUDE_DIRS})
