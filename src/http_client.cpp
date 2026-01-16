@@ -130,8 +130,9 @@ std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(std::string_view
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, pImpl_->timeout);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, (long)pImpl_->config.buffer_size);
     set_http_version(curl, pImpl_->config, url);
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(chunk);
@@ -211,6 +212,7 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(std::string_view ur
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &dctx);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, (long)pImpl_->config.buffer_size);
     set_http_version(curl, pImpl_->config, url);
     ProgressData pdata{progress_callback, std::chrono::steady_clock::now(), 0};
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback_func);

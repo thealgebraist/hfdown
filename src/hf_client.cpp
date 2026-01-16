@@ -6,6 +6,10 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <algorithm>
+#include <thread>
+#include <mutex>
+#include <queue>
+#include <format>
 
 namespace hfdown {
 
@@ -143,48 +147,121 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
         }
     }
 
-    auto last_update = std::chrono::steady_clock::now();
-    const size_t total_files = model_info->files.size();
-    size_t file_count = total_files - files_to_download.size();
+    const size_t num_threads = 4;
+    const size_t fixed_buffer_size = 32 * 1024 * 1024; // 32MB
+    
+    std::queue<ModelFile> queue;
+    for (const auto& f : files_to_download) queue.push(f);
+    
+    std::mutex mtx;
+    std::vector<std::thread> workers;
+    std::atomic<size_t> global_downloaded{total_downloaded_bytes};
+    std::atomic<size_t> file_count{model_info->files.size() - files_to_download.size()};
+    std::atomic<bool> failed{false};
+    std::string first_error;
+    std::vector<std::string> active_filenames(num_threads, "Idle");
 
-    auto last_heartbeat = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
 
-    for (const auto& file : files_to_download) {
-        auto now_hb = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now_hb - last_heartbeat).count() >= 1) {
-            compact::Writer::error("[HF] Heartbeat: "); compact::Writer::print_num(file_count);
-            compact::Writer::error("/"); compact::Writer::print_num(total_files); compact::Writer::error("\n");
-            last_heartbeat = now_hb;
-        }
-
-        auto file_path = output_dir / file.filename;
-        if (file_path.has_parent_path()) std::filesystem::create_directories(file_path.parent_path());
-        
-        std::string url = get_file_url(model_id, file.filename);
-
-        auto file_callback = [&](const DownloadProgress& p) {
-            if (!progress_callback) return;
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update).count();
-            if (elapsed_ms >= 100 || p.downloaded_bytes >= p.total_bytes) {
-                DownloadProgress global_p = p;
-                global_p.downloaded_bytes = total_downloaded_bytes + p.downloaded_bytes;
-                global_p.total_bytes = total_bytes;
-                if (elapsed_ms > 0) {
-                    global_p.speed_mbps = (static_cast<double>(p.downloaded_bytes) / (1024.0 * 1024.0)) / (static_cast<double>(elapsed_ms) / 1000.0);
-                }
-                progress_callback(global_p);
-                last_update = now;
+    for (size_t i = 0; i < num_threads; ++i) {
+        workers.emplace_back([&, i]() {
+            Http3Client thread_client;
+            if (!token_.empty()) {
+                thread_client.set_header("Authorization", "Bearer " + token_);
             }
-        };
+            HttpConfig thread_config = config_;
+            thread_config.buffer_size = fixed_buffer_size;
+            thread_client.set_config(thread_config);
 
-        auto result = http_client_.download_file(url, file_path, file_callback, 0, file.oid.size() == 64 ? file.oid : "");
-        if (!result) return std::unexpected(HFErrorInfo{HFError::NetworkError, "File failed: " + result.error().message});
-        total_downloaded_bytes += file.size;
-        file_count++;
-        compact::Writer::error("[HF] Completed "); compact::Writer::print_num(file_count);
-        compact::Writer::error("/"); compact::Writer::print_num(total_files); 
-        compact::Writer::error(": "); compact::Writer::error(file.filename); compact::Writer::error("\n");
+            while (true) {
+                ModelFile file;
+                {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    if (queue.empty() || failed) {
+                        active_filenames[i] = "Done";
+                        break;
+                    }
+                    file = queue.front();
+                    queue.pop();
+                    active_filenames[i] = file.filename;
+                }
+
+                auto file_path = output_dir / file.filename;
+                if (file_path.has_parent_path()) {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    std::filesystem::create_directories(file_path.parent_path());
+                }
+
+                std::string url = get_file_url(model_id, file.filename);
+                size_t last_file_downloaded = 0;
+
+                auto file_callback = [&](const DownloadProgress& p) {
+                    size_t diff = p.downloaded_bytes - last_file_downloaded;
+                    last_file_downloaded = p.downloaded_bytes;
+                    global_downloaded += diff;
+
+                    if (progress_callback) {
+                        auto now = std::chrono::steady_clock::now();
+                        static std::atomic<uint64_t> last_msg_ms{0};
+                        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                        auto prev_ms = last_msg_ms.load();
+                        if (now_ms - prev_ms >= 100 || p.downloaded_bytes >= p.total_bytes) {
+                            if (last_msg_ms.compare_exchange_strong(prev_ms, now_ms)) {
+                                DownloadProgress global_p;
+                                global_p.downloaded_bytes = global_downloaded.load();
+                                global_p.total_bytes = total_bytes;
+                                
+                                {
+                                    std::lock_guard<std::mutex> lock(mtx);
+                                    std::string active;
+                                    for (const auto& name : active_filenames) {
+                                        if (name != "Idle" && name != "Done") {
+                                            if (!active.empty()) active += ", ";
+                                            active += name;
+                                        }
+                                    }
+                                    global_p.active_files = active;
+                                }
+
+                                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+                                if (elapsed > 0) {
+                                    global_p.speed_mbps = (static_cast<double>(global_p.downloaded_bytes - total_downloaded_bytes) / (1024.0 * 1024.0)) / (elapsed / 1000.0);
+                                }
+                                progress_callback(global_p);
+                            }
+                        }
+                    }
+                };
+
+                auto result = thread_client.download_file(url, file_path, file_callback, 0, file.oid.size() == 64 ? file.oid : "");
+                if (!result) {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    if (!failed) {
+                        failed = true;
+                        first_error = "File failed: " + file.filename + " - " + result.error().message;
+                    }
+                    return;
+                }
+
+                size_t current_file_count = ++file_count;
+                {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    compact::Writer::error("[HF] Completed "); 
+                    compact::Writer::print_num(current_file_count);
+                    compact::Writer::error("/"); 
+                    compact::Writer::print_num(model_info->files.size()); 
+                    compact::Writer::error(": "); 
+                    compact::Writer::error(file.filename); 
+                    compact::Writer::error("\n");
+                }
+            }
+        });
+    }
+
+    for (auto& w : workers) w.join();
+
+    if (failed) {
+        return std::unexpected(HFErrorInfo{HFError::NetworkError, first_error});
     }
     
     compact::Writer::print("✓ Successfully downloaded model\n");

@@ -13,6 +13,7 @@ struct DownloadProgress {
     size_t total_bytes = 0;
     double speed_mbps = 0.0;
     std::string current_checksum; // Current partial checksum
+    std::string active_files;     // Names of files currently being downloaded
     
     double percentage() const {
         return total_bytes > 0 ? (100.0 * downloaded_bytes / total_bytes) : 0.0;
