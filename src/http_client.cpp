@@ -87,8 +87,8 @@ public:
     std::map<std::string, std::string> headers;
     long timeout = 300;
     HttpConfig config;
-    Impl() { curl_global_init(CURL_GLOBAL_ALL); }
-    ~Impl() { curl_global_cleanup(); }
+    Impl() {}
+    ~Impl() {}
 };
 
 HttpClient::HttpClient() : pImpl_(std::make_unique<Impl>()) {}
@@ -130,7 +130,7 @@ std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(std::string_view
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, pImpl_->timeout);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response);
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, (long)pImpl_->config.buffer_size);
     set_http_version(curl, pImpl_->config, url);
