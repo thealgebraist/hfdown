@@ -251,7 +251,7 @@ bool QuicSocket::wait_io(int timeout_ms) {
     struct kevent change;
     EV_SET(&change, udp_fd_, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
     struct kevent event;
-    struct timesat timeout_spec;
+    struct timespec timeout_spec;
     struct timespec* ts_ptr = nullptr;
     if (timeout_ms >= 0) {
         timeout_spec.tv_sec = timeout_ms / 1000;
@@ -683,12 +683,14 @@ void QuicSocket::drive() {
         // std::cout << "[QUIC] Sent " << written << " control bytes\n";
     }
 
-    // Receive packets
-    if (wait_io(1)) {
-        ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
-        if (recvd > 0) {
-            ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
-        }
+    // Receive packets in batches to reduce syscall overhead
+    for (int batch = 0; batch < 16; ++batch) {
+        if (wait_io(batch == 0 ? 1 : 0)) {
+            ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
+            if (recvd > 0) {
+                ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
+            } else break;
+        } else break;
     }
 #endif
 }

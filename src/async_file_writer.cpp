@@ -25,7 +25,18 @@ AsyncFileWriter::AsyncFileWriter(const std::filesystem::path& path, size_t file_
             return;
         }
 
-        mmap_ptr_ = mmap(nullptr, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+        int mmap_flags = MAP_SHARED;
+#ifdef MAP_HUGETLB
+        if (file_size >= 2 * 1024 * 1024) mmap_flags |= MAP_HUGETLB;
+#endif
+        mmap_ptr_ = mmap(nullptr, file_size, PROT_READ | PROT_WRITE, mmap_flags, fd_, 0);
+#ifdef MAP_HUGETLB
+        if (mmap_ptr_ == MAP_FAILED && (mmap_flags & MAP_HUGETLB)) {
+            // Fallback to regular pages if huge pages fail
+            mmap_ptr_ = mmap(nullptr, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+        }
+#endif
+        
         if (mmap_ptr_ == MAP_FAILED) {
             std::cerr << std::format("Error mmaping file {}: \n", path.string(), strerror(errno));
             mmap_ptr_ = nullptr;
@@ -80,6 +91,8 @@ std::expected<void, FileWriteError> AsyncFileWriter::write_at(const void* data, 
         if (offset + size > file_size_) {
             return std::unexpected(FileWriteError{"Write out of bounds", EINVAL});
         }
+        // Hint to the kernel that we are going to write here
+        // Using __builtin_assume_aligned if we could guarantee alignment
         std::memcpy(static_cast<char*>(mmap_ptr_) + offset, data, size);
         return {};
     } else if (fd_ != -1) {

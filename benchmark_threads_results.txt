@@ -1,0 +1,4 @@
+Threads|WallTime(s)|Speed(MB/s)
+1|4|1.37
+4|4|1.21
+8|4|1.36

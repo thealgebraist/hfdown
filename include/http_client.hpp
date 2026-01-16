@@ -62,22 +62,22 @@ public:
     
     // Download file to disk with progress callback
     std::expected<void, HttpErrorInfo> download_file(
-        const std::string& url,
+        std::string_view url,
         const std::filesystem::path& output_path,
         ProgressCallback progress_callback = nullptr,
         size_t resume_offset = 0,
-        const std::string& expected_checksum = "",
+        std::string_view expected_checksum = "",
         size_t write_offset = 0
     );
     
     // GET request returning response body as string
-    std::expected<std::string, HttpErrorInfo> get(const std::string& url);
+    std::expected<std::string, HttpErrorInfo> get(std::string_view url);
 
     // GET request returning full response object
-    std::expected<struct HttpResponse, HttpErrorInfo> get_full(const std::string& url);
+    std::expected<struct HttpResponse, HttpErrorInfo> get_full(std::string_view url);
     
     // Set custom headers
-    void set_header(const std::string& key, const std::string& value);
+    void set_header(std::string_view key, std::string_view value);
     
     // Set timeout in seconds
     void set_timeout(long seconds);

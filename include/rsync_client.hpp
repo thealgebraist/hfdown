@@ -91,6 +91,19 @@ private:
     // Calculate SHA256 checksum of a file
     std::string calculate_checksum(const std::filesystem::path& path);
     
+    // Binary diff heuristics
+    std::expected<void, RsyncErrorInfo> download_with_heuristics(
+        const std::string& model_id,
+        const ModelFile& remote_file,
+        const std::filesystem::path& local_path,
+        ProgressCallback progress_callback
+    );
+
+    bool heuristic_append_only(const ModelFile& remote, const std::filesystem::path& local, std::string& url);
+    bool heuristic_sparse_chunks(const ModelFile& remote, const std::filesystem::path& local, std::string& url);
+    bool heuristic_suffix_match(const ModelFile& remote, const std::filesystem::path& local, std::string& url);
+    bool heuristic_metadata_only(const ModelFile& remote, const std::filesystem::path& local, std::string& url);
+
     // Execute SSH command
     std::expected<std::string, RsyncErrorInfo> ssh_execute(
         const SshConfig& config,

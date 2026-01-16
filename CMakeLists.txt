@@ -5,6 +5,16 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Optimization and Specialization Flags
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_compile_options(-O3 -flto -ffunction-sections -fdata-sections)
+    if(APPLE)
+        add_link_options("-Wl,-dead_strip" -flto)
+    else()
+        add_link_options("-Wl,--gc-sections" -flto)
+    endif()
+endif()
+
 # Find required packages
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)

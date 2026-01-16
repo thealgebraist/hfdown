@@ -1,65 +1,84 @@
+import os
 import subprocess
 import time
-import os
-import shutil
-import numpy as np
-from scipy import stats
+import signal
+import sys
+import random
+import string
 
-def run_hfdown(model_id, output_dir, mirror):
+def generate_random_data(filename, size_gb):
+    print(f"Generating {size_gb}GB of random data in {filename}...")
+    # Using dd for fast random data generation if possible
+    try:
+        subprocess.run(["dd", "if=/dev/urandom", f"of={filename}", "bs=1M", f"count={size_gb * 1024}"], check=True)
+    except:
+        # Fallback to python if dd fails (slower)
+        with open(filename, "wb") as f:
+            for _ in range(size_gb * 1024):
+                f.write(os.urandom(1024 * 1024))
+
+def setup_benchmark():
+    os.makedirs("benchmark_local_data/test/model/resolve/main", exist_ok=True)
+    os.makedirs("benchmark_local_data/api/models/test/model", exist_ok=True)
+    
+    # 1. Generate 5GB file
+    data_file = "benchmark_local_data/test/model/large_file.bin"
+    if not os.path.exists(data_file):
+        generate_random_data(data_file, 5)
+    
+    # 2. Create mock API response
+    api_dir = "benchmark_local_data/api/models/test/model/tree"
+    os.makedirs(api_dir, exist_ok=True)
+    api_json = os.path.join(api_dir, "main?recursive=true")
+    with open(api_json, "w") as f:
+        f.write('[{"type": "file", "path": "large_file.bin", "size": 5368709120}]')
+
+def run_benchmark():
+    # Start server
+    print("Starting server...")
+    server_process = subprocess.Popen([sys.executable, "src/tests/test_server.py", "benchmark_local_data"], 
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    # Wait for server to write port
+    time.sleep(2)
+    with open("server.port", "r") as f:
+        port = f.read().strip()
+    
+    url = f"http://localhost:{port}"
+    print(f"Server running at {url}")
+    
+    # Clean output
+    if os.path.exists("benchmark_out"):
+        subprocess.run(["rm", "-rf", "benchmark_out"])
+    os.makedirs("benchmark_out")
+
+    # Run hfdown with profiling
+    # On macOS, /usr/bin/time -l provides detailed stats
+    print("Starting download and profiling...")
     cmd = [
-        "./build/hfdown", "download", model_id, output_dir,
-        "--mirror", mirror,
-        "--protocol", "http/1.1" # Using http/1.1 for simplicity in local test server
+        "/usr/bin/time", "-l",
+        "./build/hfdown", "download", "test/model", "benchmark_out",
+        "--mirror", url
     ]
-    start = time.time()
+    
+    start_time = time.time()
     result = subprocess.run(cmd, capture_output=True, text=True)
-    end = time.time()
+    end_time = time.time()
+    
+    duration = end_time - start_time
+    print(f"Download finished in {duration:.2f} seconds")
+    
+    # Kill server
+    server_process.terminate()
+    
+    # Print results
+    print("\n--- Profiling Results ---")
+    print(result.stderr)
+    
     if result.returncode != 0:
-        print(f"Error: {result.stderr}")
-        return None
-    return end - start
-
-def main():
-    model_id = "test/random-model"
-    mirror = "http://localhost:8888"
-    iterations = 5
-    
-    print(f"Starting benchmark for {model_id}...")
-    
-    times = []
-    for i in range(iterations):
-        output_dir = f"test_download_{i}"
-        if os.path.exists(output_dir):
-            shutil.rmtree(output_dir)
-            
-        t = run_hfdown(model_id, output_dir, mirror)
-        if t is not None:
-            times.append(t)
-            print(f"Iteration {i+1}: {t:.2f}s")
-        
-        if os.path.exists(output_dir):
-            shutil.rmtree(output_dir)
-
-    if not times:
-        print("Benchmarking failed.")
-        return
-
-    avg = np.mean(times)
-    std = np.std(times)
-    print(f"\nAverage time: {avg:.2f}s ± {std:.2f}s")
-
-    # Example of T-Test (comparing with a hypothetical baseline)
-    baseline_avg = avg * 1.1 # Let's assume baseline was 10% slower
-    baseline_times = np.random.normal(baseline_avg, std, iterations)
-    
-    t_stat, p_val = stats.ttest_ind(times, baseline_times)
-    print(f"T-statistic: {t_stat:.4f}")
-    print(f"P-value: {p_val:.4f}")
-    
-    if p_val < 0.05:
-        print("Performance difference is statistically significant.")
-    else:
-        print("No statistically significant performance difference found.")
+        print("Error: hfdown failed")
+        print(result.stdout)
 
 if __name__ == "__main__":
-    main()
+    setup_benchmark()
+    run_benchmark()

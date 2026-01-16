@@ -1,5 +1,6 @@
 #include "http3_client.hpp"
-#include <format>
+#include "compact_log.hpp"
+#include <charconv>
 #include <algorithm>
 #include <iostream>
 #include <fstream>
@@ -14,13 +15,20 @@ Http3Client::Http3Client() {
 }
 
 std::expected<void, HttpErrorInfo> Http3Client::download_file(
-    const std::string& url,
+    std::string_view url,
     const std::filesystem::path& output_path,
     ProgressCallback progress_callback,
     size_t resume_offset,
-    const std::string& expected_checksum,
+    std::string_view expected_checksum,
     size_t write_offset
 ) {
+    if (url.starts_with("http://")) {
+        compact::Writer::error("[H3] download_file falling back to H2C\n");
+        // Copy headers
+        for (const auto& [k, v] : headers_) http1_fallback_.set_header(k, v);
+        return http1_fallback_.download_file(url, output_path, progress_callback, resume_offset, expected_checksum, write_offset);
+    }
+
     auto [host, port] = parse_url(url);
     bool use_h3 = (forced_protocol_ == "h3");
     
@@ -34,18 +42,17 @@ std::expected<void, HttpErrorInfo> Http3Client::download_file(
     }
 
     if (use_h3) {
-        auto [host, port] = parse_url(url);
         std::string path = "/";
         auto host_start = url.find("://");
-        if (host_start != std::string::npos) host_start += 3; else host_start = 0;
+        if (host_start != std::string_view::npos) host_start += 3; else host_start = 0;
         auto path_start = url.find('/', host_start);
-        if (path_start != std::string::npos) path = url.substr(path_start);
+        if (path_start != std::string_view::npos) path = std::string(url.substr(path_start));
 
         QuicSocket socket;
         auto conn = socket.connect(host, port);
         if (!conn) {
             if (forced_protocol_ == "h3") {
-                return std::unexpected(HttpErrorInfo{HttpError::ConnectionFailed, conn.error().message});
+                return std::unexpected(HttpErrorInfo{HttpError::ConnectionFailed, "H3 Conn Failed"});
             }
             goto fallback;
         }
@@ -93,43 +100,48 @@ fallback:
     return http1_fallback_.download_file(url, output_path, progress_callback, resume_offset, expected_checksum, write_offset);
 }
 
-void Http3Client::set_header(const std::string& key, const std::string& value) {
-    headers_[key] = value;
+void Http3Client::set_header(std::string_view key, std::string_view value) {
+    headers_[std::string(key)] = std::string(value);
 }
 
 void Http3Client::set_config(const HttpConfig& config) {
     http1_fallback_.set_config(config);
 }
 
-void Http3Client::set_protocol(const std::string& protocol) {
+void Http3Client::set_protocol(std::string_view protocol) {
     forced_protocol_ = protocol;
 }
 
-std::pair<std::string, uint16_t> Http3Client::parse_url(const std::string& url) {
+std::pair<std::string, uint16_t> Http3Client::parse_url(std::string_view url) {
     std::string host;
     uint16_t port = 443;
     auto host_start = url.find("://");
-    if (host_start != std::string::npos) {
+    if (host_start != std::string_view::npos) {
         host_start += 3;
     } else {
         host_start = 0;
     }
     auto path_start = url.find('/', host_start);
-    auto host_part = path_start != std::string::npos ? url.substr(host_start, path_start - host_start) : url.substr(host_start);
+    auto host_part = path_start != std::string_view::npos ? url.substr(host_start, path_start - host_start) : url.substr(host_start);
     auto port_pos = host_part.find(':');
-    if (port_pos != std::string::npos) {
-        host = host_part.substr(0, port_pos);
-        port = static_cast<uint16_t>(std::stoi(host_part.substr(port_pos + 1)));
+    if (port_pos != std::string_view::npos) {
+        host = std::string(host_part.substr(0, port_pos));
+        std::string port_str(host_part.substr(port_pos + 1));
+        std::from_chars(port_str.data(), port_str.data() + port_str.size(), port);
     } else {
-        host = host_part;
+        host = std::string(host_part);
     }
-    // Debug output
     return {host, port};
 }
 
-std::expected<HttpResponse, HttpErrorInfo> Http3Client::get(const std::string& url) {
+std::expected<HttpResponse, HttpErrorInfo> Http3Client::get(std::string_view url) {
     auto [host, port] = parse_url(url);
     
+    // http:// must use try_http2 (h2c) as QUIC requires TLS
+    if (url.starts_with("http://")) {
+        return try_http2(url);
+    }
+
     // If protocol is forced, use it immediately
     if (!forced_protocol_.empty()) {
         if (forced_protocol_ == "h3") return try_http3(url);
@@ -144,10 +156,8 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::get(const std::string& u
         std::lock_guard lock(cache_mutex);
         if (auto it = protocol_cache_.find(host); it != protocol_cache_.end()) {
             if (it->second == "h3") {
-                std::cout << "  [Cache] Host " << host << " known to support HTTP/3, attempting...\n";
                 auto result = try_http3(url);
                 if (result) return result;
-                std::cout << "  [Cache] HTTP/3 attempt failed, falling back and clearing cache\n";
                 protocol_cache_.erase(host);
             }
         }
@@ -162,27 +172,27 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::get(const std::string& u
             }
         }
         if (result->status_code >= 400) {
-            return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", result->status_code), result->status_code});
+            return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", result->status_code});
         }
     }
     return result;
 }
 
-std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http3(const std::string& url) {
+std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http3(std::string_view url) {
     auto [host, port] = parse_url(url);
     // Extract path (must be at least '/')
     std::string path = "/";
     auto host_start = url.find("://");
-    if (host_start != std::string::npos) host_start += 3; else host_start = 0;
+    if (host_start != std::string_view::npos) host_start += 3; else host_start = 0;
     auto path_start = url.find('/', host_start);
-    if (path_start != std::string::npos) path = url.substr(path_start);
+    if (path_start != std::string_view::npos) path = std::string(url.substr(path_start));
 
     QuicSocket socket;
     auto conn = socket.connect(host, port);
     if (!conn) {
         return std::unexpected(HttpErrorInfo{
             HttpError::ConnectionFailed,
-            std::format("HTTP/3 connection failed: {}", conn.error().message)
+            "H3 connection failed"
         });
     }
 
@@ -199,28 +209,27 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http3(const std::str
 
     auto send_result = socket.send_headers(h3_headers);
     if (!send_result) {
-        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, send_result.error().message});
+        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Send failed"});
     }
 
     auto resp_result = socket.get_response();
     if (!resp_result) {
-        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, resp_result.error().message});
+        return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Recv failed"});
     }
 
     HttpResponse response{};
     response.status_code = resp_result->status_code;
     response.body = std::move(resp_result->body);
     response.protocol = "h3";
-    // Copy headers if needed
     
     if (response.status_code >= 400) {
-        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", response.status_code), response.status_code});
+        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", response.status_code});
     }
 
     return response;
 }
 
-std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http2(const std::string& url) {
+std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http2(std::string_view url) {
     // Copy headers to HTTP client
     for (const auto& [key, value] : headers_) {
         http1_fallback_.set_header(key, value);
@@ -233,7 +242,7 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http2(const std::str
     return result;
 }
 
-std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http1(const std::string& url) {
+std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http1(std::string_view url) {
     // Copy headers to HTTP/1.1 client
     for (const auto& [key, value] : headers_) {
         http1_fallback_.set_header(key, value);
@@ -246,12 +255,19 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http1(const std::str
 }
 
 std::expected<HttpResponse, HttpErrorInfo> Http3Client::get_with_range(
-    const std::string& url, 
+    std::string_view url, 
     size_t start, 
     size_t end
 ) {
-    std::string range_val = std::format("bytes={}-{}", start, end);
-    set_header("Range", range_val);
+    char range_val[64];
+    auto [ptr, ec] = std::to_chars(range_val, range_val + sizeof(range_val), start);
+    std::string rv = "bytes=";
+    rv.append(range_val, ptr - range_val);
+    rv += "-";
+    auto [ptr2, ec2] = std::to_chars(range_val, range_val + sizeof(range_val), end);
+    rv.append(range_val, ptr2 - range_val);
+
+    set_header("Range", rv);
     auto res = get(url);
     // Important: remove range header so subsequent requests aren't affected
     headers_.erase("Range");

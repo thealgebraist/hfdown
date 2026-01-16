@@ -70,12 +70,16 @@ public:
         http_client_.set_protocol(protocol);
     }
 
+    void set_config(const HttpConfig& config);
+
     void use_mirror(bool enable) { use_mirror_ = enable; }
     void set_mirror_url(const std::string& url) { mirror_url_ = url; }
 
+    std::string get_file_url(const std::string& model_id, const std::string& filename) const;
+    Http3Client http_client_;
+
 private:
     std::string token_;
-    Http3Client http_client_;
     HttpClient http1_client_; // For non-H3 downloads
     HttpConfig config_;
     bool use_mirror_ = false;
@@ -83,7 +87,6 @@ private:
     DownloadState current_state_ = DownloadState::Idle;
     
     std::string get_api_url(const std::string& model_id) const;
-    std::string get_file_url(const std::string& model_id, const std::string& filename) const;
 };
 
 } // namespace hfdown

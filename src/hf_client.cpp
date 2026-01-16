@@ -1,7 +1,6 @@
 #include "hf_client.hpp"
 #include "json.hpp"
-#include <format>
-#include <iostream>
+#include "compact_log.hpp"
 #include <chrono>
 #include <fcntl.h>
 #include <unistd.h>
@@ -15,19 +14,27 @@ HuggingFaceClient::HuggingFaceClient() = default;
 HuggingFaceClient::HuggingFaceClient(std::string token) 
     : token_(std::move(token)) {
     if (!token_.empty()) {
-        http_client_.set_header("Authorization", std::format("Bearer {}", token_));
+        std::string auth = "Bearer "; auth += token_;
+        http_client_.set_header("Authorization", auth);
     }
+}
+
+void HuggingFaceClient::set_config(const HttpConfig& config) {
+    config_ = config;
+    http_client_.set_config(config);
 }
 
 std::string HuggingFaceClient::get_api_url(const std::string& model_id) const {
     std::string base = use_mirror_ ? mirror_url_ : "https://huggingface.co";
-    return std::format("{}/api/models/{}/tree/main?recursive=true", base, model_id);
+    std::string url = base; url += "/api/models/"; url += model_id; url += "/tree/main?recursive=true";
+    return url;
 }
 
 std::string HuggingFaceClient::get_file_url(const std::string& model_id, 
                                             const std::string& filename) const {
     std::string base = use_mirror_ ? mirror_url_ : "https://huggingface.co";
-    return std::format("{}/{}/resolve/main/{}", base, model_id, filename);
+    std::string url = base; url += "/"; url += model_id; url += "/resolve/main/"; url += filename;
+    return url;
 }
 
 std::expected<ModelInfo, HFErrorInfo> HuggingFaceClient::get_model_info(
@@ -40,7 +47,7 @@ std::expected<ModelInfo, HFErrorInfo> HuggingFaceClient::get_model_info(
         if (err.status_code == 404) {
             return std::unexpected(HFErrorInfo{
                 HFError::ModelNotFound,
-                std::format("Model '{}' not found", model_id)
+                "Model not found"
             });
         }
         return std::unexpected(HFErrorInfo{
@@ -49,35 +56,31 @@ std::expected<ModelInfo, HFErrorInfo> HuggingFaceClient::get_model_info(
         });
     }
     
-    try {
-        auto json_data = json::parse(response->body);
-        
-        ModelInfo info;
-        info.model_id = model_id;
-        
-        if (json_data.is_array()) {
-            for (const auto& item : json_data.as_array()) {
-                if (item["type"].is_string() && item["type"].as_string() == "file") {
-                    if (item["path"].is_string()) {
-                        ModelFile file;
-                        file.filename = item["path"].as_string();
-                        file.size = item["size"].is_number() ? static_cast<size_t>(item["size"].as_number()) : 0;
-                        
-                        if (item["lfs"].is_object() && item["lfs"]["oid"].is_string()) {
-                            file.oid = item["lfs"]["oid"].as_string();
-                        }
-                        info.files.push_back(file);
-                    }
-                }
-            }
+    ModelInfo info;
+    info.model_id = model_id;
+    
+    struct TempFile {
+        std::string path;
+        size_t size = 0;
+        std::string oid;
+        bool is_file = false;
+    } current;
+
+    json::SAXParser::parse_tree_api(response->body, [&](std::string_view k, std::string_view v, bool is_str) {
+        if (k == "type") current.is_file = (v == "file");
+        else if (k == "path") current.path = std::string(v);
+        else if (k == "size" && !is_str) {
+            std::from_chars(v.data(), v.data() + v.size(), current.size);
         }
-        return info;
-    } catch (const std::exception& e) {
-        return std::unexpected(HFErrorInfo{
-            HFError::ParseError,
-            std::format("Failed to parse model info: {}", e.what())
-        });
-    }
+        else if (k == "oid") current.oid = std::string(v);
+        
+        if (current.is_file && !current.path.empty() && current.size > 0) {
+            info.files.push_back({current.path, current.size, current.oid});
+            current = {};
+        }
+    });
+    
+    return info;
 }
 
 std::expected<void, HFErrorInfo> HuggingFaceClient::download_file(
@@ -103,7 +106,7 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_file(
     if (!result) {
         return std::unexpected(HFErrorInfo{
             HFError::NetworkError,
-            std::format("Failed to download {}: {}", filename, result.error().message)
+            "Download failed"
         });
     }
     return {};
@@ -137,8 +140,18 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
 
     auto last_update = std::chrono::steady_clock::now();
     const size_t total_files = model_info->files.size();
+    size_t file_count = total_files - files_to_download.size();
+
+    auto last_heartbeat = std::chrono::steady_clock::now();
 
     for (const auto& file : files_to_download) {
+        auto now_hb = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now_hb - last_heartbeat).count() >= 1) {
+            compact::Writer::error("[HF] Heartbeat: "); compact::Writer::print_num(file_count);
+            compact::Writer::error("/"); compact::Writer::print_num(total_files); compact::Writer::error("\n");
+            last_heartbeat = now_hb;
+        }
+
         auto file_path = output_dir / file.filename;
         if (file_path.has_parent_path()) std::filesystem::create_directories(file_path.parent_path());
         
@@ -147,27 +160,29 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
         auto file_callback = [&](const DownloadProgress& p) {
             if (!progress_callback) return;
             auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update).count();
-            
-            if (elapsed >= 500 || p.downloaded_bytes >= p.total_bytes) {
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update).count();
+            if (elapsed_ms >= 100 || p.downloaded_bytes >= p.total_bytes) {
                 DownloadProgress global_p = p;
                 global_p.downloaded_bytes = total_downloaded_bytes + p.downloaded_bytes;
                 global_p.total_bytes = total_bytes;
+                if (elapsed_ms > 0) {
+                    global_p.speed_mbps = (static_cast<double>(p.downloaded_bytes) / (1024.0 * 1024.0)) / (static_cast<double>(elapsed_ms) / 1000.0);
+                }
                 progress_callback(global_p);
                 last_update = now;
             }
         };
 
         auto result = http_client_.download_file(url, file_path, file_callback, 0, file.oid);
-        if (!result) {
-            return std::unexpected(HFErrorInfo{HFError::NetworkError, result.error().message});
-        }
+        if (!result) return std::unexpected(HFErrorInfo{HFError::NetworkError, "File failed"});
         total_downloaded_bytes += file.size;
+        file_count++;
+        compact::Writer::error("[HF] Completed "); compact::Writer::print_num(file_count);
+        compact::Writer::error("/"); compact::Writer::print_num(total_files); 
+        compact::Writer::error(": "); compact::Writer::error(file.filename); compact::Writer::error("\n");
     }
     
-    std::cout << std::format("✓ Successfully downloaded {} files to \n", 
-                            total_files, output_dir.string());
-    
+    compact::Writer::print("✓ Successfully downloaded model\n");
     return {};
 }
 

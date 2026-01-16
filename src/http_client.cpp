@@ -110,8 +110,8 @@ HttpClient::~HttpClient() = default;
 HttpClient::HttpClient(HttpClient&&) noexcept = default;
 HttpClient& HttpClient::operator=(HttpClient&&) noexcept = default;
 
-void HttpClient::set_header(const std::string& key, const std::string& value) {
-    pImpl_->headers[key] = value;
+void HttpClient::set_header(std::string_view key, std::string_view value) {
+    pImpl_->headers[std::string(key)] = std::string(value);
 }
 
 void HttpClient::set_timeout(long seconds) {
@@ -122,7 +122,8 @@ void HttpClient::set_config(const HttpConfig& config) {
     pImpl_->config = config;
 }
 
-std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(const std::string& url) {
+std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(std::string_view url_sv) {
+    std::string url(url_sv);
     CURL* curl = curl_easy_init();
     if (!curl) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to init CURL"});
     
@@ -130,12 +131,14 @@ std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(const std::strin
     std::string body;
     struct curl_slist* chunk = nullptr;
     for (const auto& [k, v] : pImpl_->headers) {
-        chunk = curl_slist_append(chunk, std::format("{}: {}", k, v).c_str());
+        std::string h = k; h += ": "; h += v;
+        chunk = curl_slist_append(chunk, h.c_str());
     }
     
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L); // Enable verbose traces
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, pImpl_->timeout);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
@@ -143,10 +146,17 @@ std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(const std::strin
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response);
     
     if (pImpl_->config.enable_http2) {
-        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+        if (url.starts_with("http://")) {
+            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
+        } else {
+            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+        }
     }
     
+    // std::cerr << "[DEBUG] Performing CURL request to: " << url << std::endl;
     CURLcode res = curl_easy_perform(curl);
+    // std::cerr << "[DEBUG] CURL request finished with code: " << res << std::endl;
+    
     if (res != CURLE_OK) {
         curl_slist_free_all(chunk);
         curl_easy_cleanup(curl);
@@ -170,23 +180,24 @@ std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(const std::strin
     return response;
 }
 
-std::expected<std::string, HttpErrorInfo> HttpClient::get(const std::string& url) {
+std::expected<std::string, HttpErrorInfo> HttpClient::get(std::string_view url) {
     auto res = get_full(url);
     if (!res) return std::unexpected(res.error());
     if (res->status_code >= 400) {
-        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", res->status_code), res->status_code});
+        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", res->status_code});
     }
     return std::move(res->body);
 }
 
 std::expected<void, HttpErrorInfo> HttpClient::download_file(
-    const std::string& url,
+    std::string_view url_sv,
     const std::filesystem::path& output_path,
     ProgressCallback progress_callback,
     size_t resume_offset,
-    const std::string& expected_checksum,
+    std::string_view expected_checksum,
     size_t write_offset
 ) {
+    std::string url(url_sv);
     CURL* curl = curl_easy_init();
     if (!curl) return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to init CURL"});
     
@@ -214,12 +225,23 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
 
     struct curl_slist* chunk = nullptr;
     for (const auto& [k, v] : pImpl_->headers) {
-        chunk = curl_slist_append(chunk, std::format("{}: {}", k, v).c_str());
+        std::string h = k; h += ": "; h += v;
+        chunk = curl_slist_append(chunk, h.c_str());
     }
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L); // Enable verbose traces
+    
+    if (pImpl_->config.enable_http2) {
+        if (url.starts_with("http://")) {
+            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
+        } else {
+            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+        }
+    }
+
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &dctx);
     
@@ -259,7 +281,7 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
     if (http_code >= 400 && http_code != 206) { 
         if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
         curl_easy_cleanup(curl);
-        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP {}", http_code), static_cast<int>(http_code)});
+        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", static_cast<int>(http_code)});
     }
     
     if (dctx.use_checksum && dctx.sha_ctx) {
@@ -269,14 +291,17 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(
         EVP_MD_CTX_free(dctx.sha_ctx);
         dctx.sha_ctx = nullptr;
 
-        std::ostringstream oss;
+        std::string actual_checksum;
+        actual_checksum.reserve(64);
         for (unsigned int i = 0; i < hash_len; ++i) {
-            oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+            char buf[3];
+            std::to_chars(buf, buf + 2, (int)hash[i], 16);
+            actual_checksum += buf[0];
+            actual_checksum += buf[1];
         }
-        std::string actual_checksum = oss.str();
         if (actual_checksum != expected_checksum) {
             curl_easy_cleanup(curl);
-            return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, std::format("Checksum mismatch! Expected {}, got {}", expected_checksum, actual_checksum)});
+            return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, "Checksum mismatch!"});
         }
     } else if (dctx.sha_ctx) {
         EVP_MD_CTX_free(dctx.sha_ctx);

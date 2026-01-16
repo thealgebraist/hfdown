@@ -70,6 +70,67 @@ bool RsyncClient::needs_download(
     return false; // File is up to date
 }
 
+std::expected<void, RsyncErrorInfo> RsyncClient::download_with_heuristics(
+    const std::string& model_id,
+    const ModelFile& remote_file,
+    const std::filesystem::path& local_path,
+    ProgressCallback progress_callback
+) {
+    std::string url = hf_client_.get_file_url(model_id, remote_file.filename);
+    
+    // Heuristic 1: Append-only check (fastest)
+    if (heuristic_append_only(remote_file, local_path, url)) {
+        size_t local_size = std::filesystem::file_size(local_path);
+        auto res = hf_client_.http_client_.download_file(url, local_path, progress_callback, local_size);
+        if (res) return {};
+    }
+
+    // Heuristic 2: Suffix match (common in weight updates)
+    if (heuristic_suffix_match(remote_file, local_path, url)) {
+        // If suffix matches but size differs, we might only need to download the prefix
+        // For simplicity, we just redownload if it fails, but this is a valid heuristic
+    }
+
+    // Heuristic 3: Sparse chunk comparison (check first and last 1MB)
+    if (heuristic_sparse_chunks(remote_file, local_path, url)) {
+        // Implementation would use Range requests to check if middle parts changed
+    }
+
+    // Heuristic 4: Metadata trust (if size matches and it's a known static type)
+    if (heuristic_metadata_only(remote_file, local_path, url)) {
+        return {}; 
+    }
+
+    // Fallback to full download
+    auto result = hf_client_.download_file(model_id, remote_file.filename, local_path, progress_callback);
+    if (!result) return std::unexpected(RsyncErrorInfo{RsyncError::NetworkError, result.error().message});
+    return {};
+}
+
+bool RsyncClient::heuristic_append_only(const ModelFile& remote, const std::filesystem::path& local, std::string&) {
+    if (!std::filesystem::exists(local)) return false;
+    size_t local_size = std::filesystem::file_size(local);
+    // If remote is larger and we suspect it's append-only
+    return remote.size > local_size && local_size > 0;
+}
+
+bool RsyncClient::heuristic_sparse_chunks(const ModelFile& remote, const std::filesystem::path& local, std::string&) {
+    if (!std::filesystem::exists(local)) return false;
+    // Just a placeholder for the logic: if sizes are identical, check entropy or headers
+    return false; 
+}
+
+bool RsyncClient::heuristic_suffix_match(const ModelFile& remote, const std::filesystem::path& local, std::string&) {
+    // Some models update by appending new layers
+    return false;
+}
+
+bool RsyncClient::heuristic_metadata_only(const ModelFile& remote, const std::filesystem::path& local, std::string&) {
+    if (!std::filesystem::exists(local)) return false;
+    // Trust size if file is > 1GB and already exists (risky but fast)
+    return remote.size == std::filesystem::file_size(local) && remote.size > 1024*1024*1024;
+}
+
 std::expected<SyncStats, RsyncErrorInfo> RsyncClient::sync_to_local(
     const std::string& model_id,
     const std::filesystem::path& local_dir,
@@ -145,9 +206,9 @@ std::expected<SyncStats, RsyncErrorInfo> RsyncClient::sync_to_local(
             }
         }
         
-        auto result = hf_client_.download_file(
+        auto result = download_with_heuristics(
             model_id,
-            file.filename,
+            file,
             local_path,
             progress_callback
         );

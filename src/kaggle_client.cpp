@@ -2,21 +2,17 @@
 #include "json.hpp"
 #include <format>
 #include <iostream>
-#include <thread>
-#include <mutex>
-#include <queue>
-#include <condition_variable>
-#include <atomic>
+#include <chrono>
 #include <sstream>
 
 namespace hfdown {
 
 KaggleClient::KaggleClient() = default;
 
-KaggleClient::KaggleClient(std::string username, std::string key) 
+KaggleClient::KaggleClient(std::string username, std::string key)
     : username_(std::move(username)), key_(std::move(key)) {
     if (!username_.empty() && !key_.empty()) {
-        std::string auth = std::format("{}:{}", username_, key_);
+        std::string auth = std::format("{}:", username_, key_);
         std::string encoded = auth; // Base64 encoding would be done here in production
         http_client_.set_header("Authorization", std::format("Basic {}", encoded));
     }
@@ -161,7 +157,7 @@ std::expected<void, KaggleErrorInfo> KaggleClient::download_dataset(
     const std::string& dataset_id,
     const std::filesystem::path& output_dir,
     ProgressCallback progress_callback,
-    size_t parallel_downloads
+    size_t /*parallel_downloads*/
 ) {
     auto info = get_dataset_info(dataset_id);
     if (!info) {
@@ -184,65 +180,37 @@ std::expected<void, KaggleErrorInfo> KaggleClient::download_dataset(
         });
     }
     
-    std::mutex queue_mutex;
-    std::condition_variable cv;
-    std::queue<size_t> file_queue;
-    std::atomic<size_t> completed_files{0};
-    std::atomic<bool> has_error{false};
-    std::string error_message;
-    
+    size_t total_downloaded_bytes = 0;
+    auto last_update = std::chrono::steady_clock::now();
+
     for (size_t i = 0; i < info->files.size(); ++i) {
-        file_queue.push(i);
-    }
-    
-    auto worker = [&]() {
-        while (true) {
-            size_t file_idx;
-            {
-                std::unique_lock lock(queue_mutex);
-                cv.wait(lock, [&] { return !file_queue.empty() || has_error; });
-                
-                if (has_error || file_queue.empty()) return;
-                
-                file_idx = file_queue.front();
-                file_queue.pop();
+        const auto& file = info->files[i];
+        auto output_path = output_dir / file.name;
+        
+        std::cout << std::format("[{}/{}] Downloading {}...\n", 
+                                i + 1, info->files.size(), file.name);
+        
+        auto file_callback = [&](const DownloadProgress& p) {
+            if (!progress_callback) return;
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update).count();
+            
+            if (elapsed >= 500 || p.downloaded_bytes >= p.total_bytes) {
+                DownloadProgress global_p = p;
+                global_p.downloaded_bytes = total_downloaded_bytes + p.downloaded_bytes;
+                global_p.total_bytes = info->total_size;
+                progress_callback(global_p);
+                last_update = now;
             }
-            
-            const auto& file = info->files[file_idx];
-            auto output_path = output_dir / file.name;
-            
-            std::cout << std::format("[{}/{}] Downloading {}...\n", 
-                                    completed_files + 1, info->files.size(), file.name);
-            
-            auto result = download_file(dataset_id, file.name, output_path, progress_callback);
-            
-            if (!result) {
-                has_error = true;
-                error_message = result.error().message;
-                cv.notify_all();
-                return;
-            }
-            
-            completed_files++;
+        };
+
+        auto result = download_file(dataset_id, file.name, output_path, file_callback);
+        
+        if (!result) {
+            return std::unexpected(result.error());
         }
-    };
-    
-    std::vector<std::thread> threads;
-    for (size_t i = 0; i < parallel_downloads; ++i) {
-        threads.emplace_back(worker);
-    }
-    
-    cv.notify_all();
-    
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    
-    if (has_error) {
-        return std::unexpected(KaggleErrorInfo{
-            KaggleError::NetworkError,
-            error_message
-        });
+        
+        total_downloaded_bytes += file.size;
     }
     
     std::cout << std::format("✓ Successfully downloaded {} files to {}\n", 
