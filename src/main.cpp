@@ -130,7 +130,8 @@ int cmd_download_file(const std::string& model_id, const std::string& file, cons
     config.file_buffer_size = buffer_size * 2;
     client.set_config(config);
 
-    auto res = client.download_file(model_id, file, ".", print_progress);
+    std::filesystem::path out_path = file;
+    auto res = client.download_file(model_id, file, out_path, print_progress);
     if (!res) { compact::Writer::error("Error: "); compact::Writer::error(res.error().message); compact::Writer::error("\n"); return 1; }
     return 0;
 }

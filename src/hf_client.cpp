@@ -111,7 +111,7 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_file(
     if (!result) {
         return std::unexpected(HFErrorInfo{
             HFError::NetworkError,
-            "Download failed"
+            "Download failed: " + result.error().message
         });
     }
     return {};

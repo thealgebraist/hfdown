@@ -172,7 +172,7 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::get(std::string_view url
             }
         }
         if (result->status_code >= 400) {
-            return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", result->status_code});
+            return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP Error {}", result->status_code), result->status_code});
         }
     }
     return result;
@@ -223,7 +223,7 @@ std::expected<HttpResponse, HttpErrorInfo> Http3Client::try_http3(std::string_vi
     response.protocol = "h3";
     
     if (response.status_code >= 400) {
-        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", response.status_code});
+        return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP Error {}", response.status_code), response.status_code});
     }
 
     return response;

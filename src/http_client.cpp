@@ -150,7 +150,7 @@ std::expected<HttpResponse, HttpErrorInfo> HttpClient::get_full(std::string_view
 std::expected<std::string, HttpErrorInfo> HttpClient::get(std::string_view url) {
     auto res = get_full(url);
     if (!res) return std::unexpected(res.error());
-    if (res->status_code >= 400) return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", res->status_code});
+    if (res->status_code >= 400) return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP Error {}", res->status_code), res->status_code});
     return std::move(res->body);
 }
 
@@ -185,7 +185,7 @@ std::expected<std::string, HttpErrorInfo> HttpClient::post(std::string_view url_
     }
     
     curl_easy_cleanup(curl);
-    if (http_code >= 400) return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", (int)http_code});
+    if (http_code >= 400) return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP Error {}", (int)http_code), (int)http_code});
     return response_body;
 }
 
@@ -230,7 +230,7 @@ std::expected<void, HttpErrorInfo> HttpClient::download_file(std::string_view ur
     }
     if (http_code >= 400 && http_code != 206) {
         if (dctx.sha_ctx) EVP_MD_CTX_free(dctx.sha_ctx);
-        curl_easy_cleanup(curl); return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, "HTTP Error", (int)http_code});
+        curl_easy_cleanup(curl); return std::unexpected(HttpErrorInfo{HttpError::HttpStatusError, std::format("HTTP Error {}", (int)http_code), (int)http_code});
     }
     if (dctx.use_checksum && dctx.sha_ctx) {
         unsigned char hash[32]; unsigned int hash_len = 0;
