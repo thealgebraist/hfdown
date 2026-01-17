@@ -148,7 +148,8 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
     }
 
     const size_t num_threads = 4;
-    const size_t fixed_buffer_size = 32 * 1024 * 1024; // 32MB
+
+
     
     std::queue<ModelFile> queue;
     for (const auto& f : files_to_download) queue.push(f);
@@ -169,9 +170,10 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
             if (!token_.empty()) {
                 thread_client.set_header("Authorization", "Bearer " + token_);
             }
-            HttpConfig thread_config = config_;
-            thread_config.buffer_size = fixed_buffer_size;
-            thread_client.set_config(thread_config);
+            if (!token_.empty()) {
+                thread_client.set_header("Authorization", "Bearer " + token_);
+            }
+
 
             while (true) {
                 ModelFile file;
@@ -191,6 +193,16 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
                     std::lock_guard<std::mutex> lock(mtx);
                     std::filesystem::create_directories(file_path.parent_path());
                 }
+
+                // Predictive Buffer Scaling
+                HttpConfig thread_config = config_;
+                if (file.size > 100 * 1024 * 1024) { // > 100MB
+                     thread_config.buffer_size = 8 * 1024 * 1024; // 8MB
+                } else {
+                     thread_config.buffer_size = 16 * 1024; // 16KB
+                }
+                thread_client.set_config(thread_config);
+
 
                 std::string url = get_file_url(model_id, file.filename);
                 size_t last_file_downloaded = 0;

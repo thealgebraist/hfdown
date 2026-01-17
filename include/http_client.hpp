@@ -5,6 +5,7 @@
 #include <optional>
 #include <expected>
 #include <filesystem>
+#include "http_protocol.hpp"
 
 namespace hfdown {
 
@@ -78,7 +79,7 @@ public:
     std::expected<std::string, HttpErrorInfo> post(std::string_view url, std::string_view body);
 
     // GET request returning full response object
-    std::expected<struct HttpResponse, HttpErrorInfo> get_full(std::string_view url);
+    std::expected<HttpResponse, HttpErrorInfo> get_full(std::string_view url);
     
     // Set custom headers
     void set_header(std::string_view key, std::string_view value);

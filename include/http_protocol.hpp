@@ -1,6 +1,5 @@
 #pragma once
 
-#include "http_client.hpp"
 #include <string>
 #include <map>
 #include <expected>
@@ -25,6 +24,12 @@ struct HttpResponse {
     std::string body;  // For small responses (http3-test)
     std::string protocol; // "h3", "h2", "http/1.1"
     std::string alt_svc; // Alt-Svc header content
+    
+    HttpResponse() = default;
+    HttpResponse(const HttpResponse&) = default;
+    HttpResponse(HttpResponse&&) = default;
+    HttpResponse& operator=(const HttpResponse&) = default;
+    HttpResponse& operator=(HttpResponse&&) = default;
 };
 
 } // namespace hfdown

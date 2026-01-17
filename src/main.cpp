@@ -5,7 +5,7 @@
 #include <chrono>
 #include <algorithm>
 #include <format>
-#include <curl/curl.h>
+
 
 using namespace hfdown;
 
@@ -159,7 +159,7 @@ int cmd_h3_test(const std::string& url, const std::string& proto) {
 }
 
 int main(int argc, char** argv) {
-    curl_global_init(CURL_GLOBAL_ALL);
+    // CURL global init removed
     FSMState state = FSMState::Init;
     FSMContext ctx{.argc = argc, .argv = argv};
     auto last_heartbeat = std::chrono::steady_clock::now();
@@ -254,6 +254,6 @@ int main(int argc, char** argv) {
                 break;
         }
     }
-    curl_global_cleanup();
+    // CURL global cleanup removed
     return ctx.exit_code;
 }
