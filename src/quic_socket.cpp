@@ -309,8 +309,44 @@ std::expected<void, QuicError> QuicSocket::handshake() {
         return std::unexpected(QuicError{"nghttp3_conn_client_new failed", rv});
     }
 
+    // Drive basic handshake: send/recv packets until ngtcp2 reports handshake complete
+    recv_buffer_.resize(65536);
+    ngtcp2_pkt_info pi;
+    memset(&pi, 0, sizeof(pi));
+    pi.ecn = NGTCP2_ECN_NOT_ECT;
+
+    for (int iter = 0; iter < 400 && !ngtcp2_conn_get_handshake_completed(ng_conn_); ++iter) {
+        uint8_t out[1500];
+        ngtcp2_ssize written = ngtcp2_conn_write_pkt(ng_conn_, &path, &pi, out, sizeof(out), (ngtcp2_tstamp)quic_now_ns());
+        if (written > 0) {
+            ssize_t s = ::sendto(udp_fd_, out, written, 0, reinterpret_cast<const struct sockaddr*>(&peer_addr_), peer_addr_len_);
+            (void)s;
+        }
+
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(udp_fd_, &readfds);
+        struct timeval tv{0, 100000};
+        int rv = select(udp_fd_ + 1, &readfds, NULL, NULL, &tv);
+        if (rv > 0 && FD_ISSET(udp_fd_, &readfds)) {
+            ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
+            if (recvd > 0) {
+                ngtcp2_ssize rc = ngtcp2_conn_read_pkt(ng_conn_, &path, &pi, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
+                (void)rc;
+            }
+        }
+    }
+
+    if (!ngtcp2_conn_get_handshake_completed(ng_conn_)) {
+        nghttp3_conn_del(ng_h3conn_);
+        ng_h3conn_ = nullptr;
+        ngtcp2_conn_del(ng_conn_);
+        ng_conn_ = nullptr;
+        return std::unexpected(QuicError{"QUIC handshake failed", 0});
+    }
+
     connected_ = true;
-    std::cout << "[DEBUG] ngtcp2/nghttp3 session created\n";
+    std::cout << "[DEBUG] ngtcp2/nghttp3 session created and handshake completed\n";
     return {};
 #elif defined(USE_QUIC)
     if (!config_ || !h3_config_) return std::unexpected(QuicError{"quiche not initialized", 0});
@@ -516,8 +552,34 @@ std::expected<void, QuicError> QuicSocket::send_headers(
     );
     if (rv != 0) return std::unexpected(QuicError{"nghttp3_conn_submit_request failed", rv});
 
-    // TODO: Drive ngtcp2/nghttp3 event loop to flush packets
-    // For now, just return success
+    // Drive ngtcp2/nghttp3 event loop to flush packets (basic loop)
+    recv_buffer_.resize(65536);
+    ngtcp2_pkt_info pi2;
+    memset(&pi2, 0, sizeof(pi2));
+    pi2.ecn = NGTCP2_ECN_NOT_ECT;
+    // Run a short loop to emit packets and process incoming packets
+    for (int iter = 0; iter < 60; ++iter) {
+        uint8_t out[1500];
+        ngtcp2_ssize written = ngtcp2_conn_write_pkt(ng_conn_, &path, &pi2, out, sizeof(out), (ngtcp2_tstamp)quic_now_ns());
+        if (written > 0) {
+            ssize_t s = ::sendto(udp_fd_, out, written, 0, reinterpret_cast<const struct sockaddr*>(&peer_addr_), peer_addr_len_);
+            (void)s;
+        }
+
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(udp_fd_, &readfds);
+        struct timeval tv{0, 100000};
+        int rv = select(udp_fd_ + 1, &readfds, NULL, NULL, &tv);
+        if (rv > 0 && FD_ISSET(udp_fd_, &readfds)) {
+            ssize_t recvd = ::recv(udp_fd_, recv_buffer_.data(), recv_buffer_.size(), 0);
+            if (recvd > 0) {
+                ngtcp2_ssize rc = ngtcp2_conn_read_pkt(ng_conn_, &path, &pi2, reinterpret_cast<uint8_t*>(recv_buffer_.data()), static_cast<size_t>(recvd), (ngtcp2_tstamp)quic_now_ns());
+                (void)rc;
+            }
+        }
+    }
+
     return {};
 #elif defined(USE_QUIC)
     if (!h3_conn_) return std::unexpected(QuicError{"H3 not initialized", 0});
@@ -567,9 +629,11 @@ std::expected<std::string, QuicError> QuicSocket::recv_headers() {
     // Minimal nghttp3: poll for response headers
     if (!ng_h3conn_ || !ng_conn_) return std::unexpected(QuicError{"nghttp3/ngtcp2 not initialized", 0});
 
-    // TODO: Drive ngtcp2/nghttp3 event loop to receive packets and poll for headers
-    // For now, just return a placeholder
-    return std::string("[nghttp3] Response headers not yet implemented\n");
+    // Basic implementation: read raw network bytes and return them (higher-level H3 parsing not yet implemented)
+    recv_buffer_.resize(65536);
+    auto res = recv(std::span{recv_buffer_.data(), recv_buffer_.size()});
+    if (!res) return std::unexpected(res.error());
+    return std::string(recv_buffer_.data(), *res);
 #elif defined(USE_QUIC)
     recv_buffer_.resize(65536);
     auto res = recv(std::span{recv_buffer_.data(), recv_buffer_.size()});
