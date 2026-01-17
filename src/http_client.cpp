@@ -73,13 +73,18 @@ public:
         
         while (redirects < 5) {
             auto url = parse_url(current_url);
-            if (url.protocol != "https") {
-                return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, "Only HTTPS supported"});
+            
+            std::unique_ptr<ISocket> socket;
+            if (url.protocol == "https") {
+                socket = std::make_unique<TlsSocket>();
+            } else if (url.protocol == "http") {
+                socket = std::make_unique<Socket>();
+            } else {
+                 return std::unexpected(HttpErrorInfo{HttpError::ProtocolError, "Only HTTP/HTTPS supported"});
             }
 
-            TlsSocket socket;
-            socket.set_timeout(timeout);
-            if (auto res = socket.connect(url.host, url.port); !res) {
+            socket->set_timeout(timeout);
+            if (auto res = socket->connect(url.host, url.port); !res) {
                 return std::unexpected(HttpErrorInfo{HttpError::ConnectionFailed, res.error().message});
             }
 
@@ -100,13 +105,13 @@ public:
             req << body;
 
             std::string req_str = req.str();
-            if (auto res = socket.write(req_str); !res) {
+            if (auto res = socket->write(req_str); !res) {
                 return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to send request"});
             }
 
             // Read Status Line
             std::string status_line;
-            if (auto res = socket.read_until("\r\n")) {
+            if (auto res = socket->read_until("\r\n")) {
                 status_line = *res;
             } else {
                 return std::unexpected(HttpErrorInfo{HttpError::NetworkError, "Failed to read status"});
@@ -126,7 +131,7 @@ public:
             std::string location;
 
             while (true) {
-                auto header_res = socket.read_until("\r\n");
+                auto header_res = socket->read_until("\r\n");
                 if (!header_res) break;
                 std::string header = *header_res;
                 if (header == "\r\n") break; // End of headers
@@ -180,7 +185,7 @@ public:
                     size_t remaining = content_length;
                     while (remaining > 0) {
                         size_t to_read = std::min(remaining, buf.size());
-                        auto read_res = socket.read({buf.data(), to_read});
+                        auto read_res = socket->read({buf.data(), to_read});
                         if (!read_res || *read_res == 0) break;
                         if (!body_callback(buf.data(), *read_res)) return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, "Write aborted"});
                         remaining -= *read_res;
@@ -189,7 +194,7 @@ public:
                 } else if (!chunked) {
                     // Read until close
                      while (true) {
-                        auto read_res = socket.read({buf.data(), buf.size()});
+                        auto read_res = socket->read({buf.data(), buf.size()});
                         if (!read_res || *read_res == 0) break;
                          if (!body_callback(buf.data(), *read_res)) return std::unexpected(HttpErrorInfo{HttpError::FileWriteError, "Write aborted"});
                          total_read += *read_res;
@@ -209,14 +214,14 @@ public:
                     size_t remaining = content_length;
                     while (remaining > 0) {
                         size_t to_read = std::min(remaining, buf.size());
-                        auto read_res = socket.read({buf.data(), to_read});
+                        auto read_res = socket->read({buf.data(), to_read});
                         if (!read_res || *read_res == 0) break;
                         body_str.append(buf.data(), *read_res);
                         remaining -= *read_res;
                     }
                 } else {
                      while (true) {
-                        auto read_res = socket.read({buf.data(), buf.size()});
+                        auto read_res = socket->read({buf.data(), buf.size()});
                         if (!read_res || *read_res == 0) break;
                         body_str.append(buf.data(), *read_res);
                      }

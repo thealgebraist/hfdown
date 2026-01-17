@@ -78,11 +78,14 @@ public:
     std::string get_file_url(const std::string& model_id, const std::string& filename) const;
     Http3Client http_client_;
 
+    void auto_select_mirror();
+    
 private:
     std::string token_;
     HttpClient http1_client_; // For non-H3 downloads
     HttpConfig config_;
     bool use_mirror_ = false;
+    bool auto_mirror_ = false;
     std::string mirror_url_ = "https://hf-mirror.com";
     DownloadState current_state_ = DownloadState::Idle;
     

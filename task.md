@@ -101,4 +101,4 @@
 
 - [x] Create meson.build <!-- id: 72 -->
 - [x] Replace libcurl with custom implementation <!-- id: 73 -->
-HTTP/1.1+TLS implementation.
+- [x] Clean old unused files and binaries <!-- id: 81 -->

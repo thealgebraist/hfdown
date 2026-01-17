@@ -80,7 +80,6 @@ agentimpl_sources = files(
   'src/async_file_writer.cpp',
   'src/quic_socket.cpp',
   'src/http3_client.cpp',
-  'src/lisp.cpp',
   'src/tls_socket.cpp',
   'src/socket_wrapper.cpp'
 )

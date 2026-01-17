@@ -127,6 +127,9 @@ int cmd_download(const std::string& model_id, const std::string& dir, const std:
     config.file_buffer_size = buffer_size * 2;
     client.set_config(config);
 
+    if (mirror == "auto") { client.auto_select_mirror(); }
+    else if (!mirror.empty()) { client.use_mirror(true); client.set_mirror_url(mirror); }
+
     auto res = client.download_model(model_id, dir, print_progress, threads);
     if (!res) { compact::Writer::error("Error: "); compact::Writer::error(res.error().message); compact::Writer::error("\n"); return 1; }
     return 0;
@@ -143,6 +146,9 @@ int cmd_download_file(const std::string& model_id, const std::string& file, cons
     client.set_config(config);
 
     std::filesystem::path out_path = file;
+    if (mirror == "auto") { client.auto_select_mirror(); }
+    else if (!mirror.empty()) { client.use_mirror(true); client.set_mirror_url(mirror); }
+    
     auto res = client.download_file(model_id, file, out_path, print_progress);
     if (!res) { compact::Writer::error("Error: "); compact::Writer::error(res.error().message); compact::Writer::error("\n"); return 1; }
     return 0;

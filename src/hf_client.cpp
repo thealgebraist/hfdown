@@ -286,4 +286,63 @@ std::expected<void, HFErrorInfo> HuggingFaceClient::download_model(
     return {};
 }
 
+void HuggingFaceClient::auto_select_mirror() {
+    auto_mirror_ = true;
+    compact::Writer::print("Auto-selecting mirror...\n");
+
+    auto probe = [&](const std::string& base_url) -> std::chrono::milliseconds {
+        std::string url = base_url + "/api/models/bert-base-uncased"; // Probe a popular model meta endpoint
+        auto start = std::chrono::steady_clock::now();
+        
+        HttpClient client; 
+        client.set_timeout(5); // 5s timeout
+        if (!token_.empty()) client.set_header("Authorization", "Bearer " + token_);
+        
+        // Use a lightweight info check (GET)
+        // HEAD might hang if client doesn't support it correcty (it doesn't yet).
+        // API endpoint is JSON, small enough.
+        auto res = client.get_full(url);
+        
+        auto end = std::chrono::steady_clock::now();
+        if (!res || res->status_code >= 400) {
+            return std::chrono::milliseconds(999999);
+        }
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    };
+
+    std::string hf = "https://huggingface.co";
+    std::string mirror = mirror_url_.empty() ? "https://hf-mirror.com" : mirror_url_;
+
+    // Parallel probe
+    std::chrono::milliseconds hf_time, mirror_time;
+    std::thread t1([&](){ hf_time = probe(hf); });
+    std::thread t2([&](){ mirror_time = probe(mirror); });
+    t1.join();
+    t2.join();
+
+    compact::Writer::print(std::format("  HF: {} ms\n", hf_time.count()));
+    compact::Writer::print(std::format("  Mirror ({}): {} ms\n", mirror, mirror_time.count()));
+
+    // User preference: "Always try to use it unless it is slow"
+    // We define "slow" as > 1500ms (1.5s) AND significantly slower than official (> 3x)
+    // If mirror is reasonably fast (< 800ms), we pick it regardless of HF speed (to save bandwidth/costs on HF side)
+    bool mirror_is_slow = (mirror_time.count() > 1500);
+    bool mirror_is_much_slower = (mirror_time > hf_time * 3);
+    bool mirror_is_fast_enough = (mirror_time.count() < 800);
+
+    if ((!mirror_is_slow && !mirror_is_much_slower) || mirror_is_fast_enough) {
+        if (mirror_time.count() < 999999) { // Ensure it's reachable
+            use_mirror_ = true;
+            mirror_url_ = mirror;
+            compact::Writer::print("-> Selected Mirror (favored)\n");
+        } else {
+            use_mirror_ = false; // Mirror unreachable
+            compact::Writer::print("-> Selected Official (Mirror unreachable)\n");
+        }
+    } else {
+        use_mirror_ = false;
+        compact::Writer::print("-> Selected Official (Mirror too slow)\n");
+    }
+}
+
 } // namespace hfdown
